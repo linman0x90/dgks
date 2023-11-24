@@ -1,7 +1,7 @@
 ## Interface: 20501
 ## Interface-Classic: 11307
 ## Interface-BCC: 20501
-## Title: dG KillShot Classic
+## Title: dG KillShot
 ## Notes: Lets people know you got a killshot.
 ## Author: @project-author@ 
 ## Version: @project-version@ 

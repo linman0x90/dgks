@@ -1642,27 +1642,8 @@ function dgks:KillshotTX(txvictim,txtimestamp)
 	deathstreak = 0
 	
 	-- Broadcast our Killshot
-	-- Whisper to ourselves just in case boardcasts are off
-	self:SendCommMessage("dgks",dgks:Serialize(playerName,txvictim,txtimestamp,streak,multikill),"WHISPER",playerName)
+	self:SendCM("dgks",dgks:Serialize(playerName,txvictim,txtimestamp,streak,multikill))
 	
-	if dgks.db.profile.doguild then
-		if IsInGuild() then
-			self:SendCommMessage("dgks",dgks:Serialize(playerName,txvictim,txtimestamp,streak,multikill),"GUILD")
-		end
-	end
-	if dgks.db.profile.dobg then
-		if UnitInBattleground("Player") then
-			self:SendCommMessage("dgks",self:Serialize(playerName,txvictim,txtimestamp,streak,multikill),"BATTLEGROUND")
-		end
-	end	
-	if dgks.db.profile.doraid then
-		-- Raid/Party Broadcast on
-		if IsInRaid() and not inArena and not UnitInBattleground("Player") then
-			self:SendCommMessage("dgks",dgks:Serialize(playerName,txvictim,txtimestamp,streak,multikill),"RAID") 
-		else 
-			self:SendCommMessage("dgks",dgks:Serialize(playerName,txvictim,txtimestamp,streak,multikill),"PARTY")
-		end
-	end
 end
 
 function dgks:DuelRX(prefix, message, distribution, sender)
@@ -1737,23 +1718,8 @@ function dgks:DuelTX(txvictim,txtimestamp)
 	-- Reset deathstreak
 	deathstreak = 0
 	
-	-- Broadcast our Killshot
-	-- Whisper to ourselves just in case boardcasts are off
-	self:SendCommMessage("dgksDUEL",dgks:Serialize(playerName,txvictim,txtimestamp,streak,multikill),"WHISPER",playerName)
-	
-	if dgks.db.profile.doguild then
-		if IsInGuild() then
-			self:SendCommMessage("dgksDUEL",dgks:Serialize(playerName,txvictim,txtimestamp,streak,multikill),"GUILD")
-		end
-	end
-	if dgks.db.profile.doraid then
-		-- Raid/Party Broadcast on
-		if IsInRaid() and not inArena and not UnitInBattleground("Player") then
-			self:SendCommMessage("dgksDUEL",dgks:Serialize(playerName,txvictim,txtimestamp,streak,multikill),"RAID") 
-		else 
-			self:SendCommMessage("dgksDUEL",dgks:Serialize(playerName,txvictim,txtimestamp,streak,multikill),"PARTY")
-		end
-	end
+	-- Broadcast our duel win
+	self:SendCM("dgksDUEL",dgks:Serialize(playerName,txvictim,txtimestamp,streak,multikill))
 end
 
 function dgks:PlayerLoss(myKiller)
@@ -1855,19 +1821,7 @@ end
 
 -- FIXME Entire version checking needs cleanup for duplicate sends
 function dgks:VersionCheck()
-    
-    local junk, inbg = IsInInstance()
-   
-    -- If in bg/arena check there
-    if (inbg == "pvp") then
-		C_ChatInfo.SendAddonMessage("dgksV", version, "BATTLEGROUND")
-    end
-     
-    if IsInGuild() then C_ChatInfo.SendAddonMessage("dgksV", version, "GUILD") end
-	-- Arena detects as IsInRaid, but errors when sending to raid for now send both.
-	if IsInRaid() then C_ChatInfo.SendAddonMessage("dgksV", version, "RAID") end
-	--else C_ChatInfo.SendAddonMessage("dgksV", version, "PARTY") end
-	C_ChatInfo.SendAddonMessage("dgksV", version, "PARTY")
+    self:SendCM("dgskV",version)
 end
 
 function dgks:dgks_SoundPack(sound)
@@ -1904,6 +1858,37 @@ function dgks:getKillLog()
 	table.foreach(dgks.db.profile.killlog, function(k,v) plog = plog .. v .. "\n" end)
 	return plog
 end
+
+function dgks:SendCM(cchan,msg)
+	-- Example usage: self:SendCM("dgksDUEL",dgks:Serialize(playerName,txvictim,txtimestamp,streak,multikill)
+
+	-- Whisper to ourselves just in case broadcasts are off
+	self:SendCommMessage(cchan,msg,"WHISPER",playerName)
+
+	if dgks.db.profile.dobroadcasts then
+
+		-- If not Retail, send to yell
+		-- https://wowpedia.fandom.com/wiki/WOW_PROJECT_ID
+		if not WOW_PROJECT_ID == 1 then
+			self:SendCommMessage(cchan,msg,"YELL")
+		end
+
+		if dgks.db.profile.doguild and IsInGuild() then
+			self:SendCommMessage(cchan,msg,"GUILD")
+		end
+		if dgks.db.profile.dobg and UnitInBattleground("Player") then
+			self:SendCommMessage(cchan,msg,"INSTANCE_CHAT")
+		end
+		if dgks.db.profile.doraid then
+			-- Raid/Party Broadcast on
+			if IsInRaid() and not inArena and not UnitInBattleground("Player") then
+				self:SendCommMessage(cchan,msg,"RAID") 
+			else 
+				self:SendCommMessage(cchan,msg,"PARTY")
+			end
+		end
+	end
+end	
 
 --@debug@
 -- Dev Debugging functions
