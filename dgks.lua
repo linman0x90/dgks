@@ -1352,7 +1352,7 @@ local defaults = {
 		kstext = "$k killed $v!",
 		dueltext = "$k has defeated $v!",
 		soundpack = "male", 
-		soundpath = "Interface\\AddOns\\dgks_classic\\sounds\\",
+		soundpath = "Interface\\AddOns\\dgks\\sounds\\",
 		dotxtemote = false,
 		doemote = "none",
 		duelemotewin = "BOW",
@@ -1884,16 +1884,16 @@ end
 function dgks:setSoundPack(info, newsoundset)
     if (newsoundset == "male") then
         self.db.profile.soundpack = newsoundset
-        self.db.profile.soundpath = "Interface\\AddOns\\dgks_classic\\sounds\\"
+        self.db.profile.soundpath = "Interface\\AddOns\\dgks\\sounds\\"
     elseif (newsoundset == "female") then
 		self.db.profile.soundpack = newsoundset
-		self.db.profile.soundpath = "Interface\\AddOns\\dgks_classic\\sounds\\female\\"
+		self.db.profile.soundpath = "Interface\\AddOns\\dgks\\sounds\\female\\"
     elseif (newsoundset == "sexy") then
 		self.db.profile.soundpack = newsoundset
-		self.db.profile.soundpath = "Interface\\AddOns\\dgks_classic\\sounds\\sexy\\"
+		self.db.profile.soundpath = "Interface\\AddOns\\dgks\\sounds\\sexy\\"
     elseif (newsoundset == "baby") then
 		self.db.profile.soundpack = newsoundset
-		self.db.profile.soundpath = "Interface\\AddOns\\dgks_classic\\sounds\\baby\\"
+		self.db.profile.soundpath = "Interface\\AddOns\\dgks\\sounds\\baby\\"
     else
         message("Error: That is not a valid option")
     end
