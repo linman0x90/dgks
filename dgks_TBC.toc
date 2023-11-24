@@ -1,4 +1,6 @@
-## Interface: 30403
+## Interface: 20501
+## Interface-Classic: 11307
+## Interface-BCC: 20501
 ## Title: dG KillShot Classic
 ## Notes: Lets people know you got a killshot.
 ## Author: @project-author@ 
@@ -9,7 +11,7 @@
 ## X-Embeds: Ace3, LibSink-2.0
 ## X-Website: http://www.wowace.com
 ## X-Category: Interface Enhancements
-## X-Curse-Project-ID: 340152
+## X-Curse-Project-ID: 14980
 
 #@no-lib-strip@
 Libs\LibStub\LibStub.lua
@@ -25,4 +27,4 @@ Libs\AceSerializer-3.0\AceSerializer-3.0.xml
 Libs\LibSink-2.0\LibSink-2.0\lib.xml
 #@end-no-lib-strip@
 ##dgks_classic_emotes.lua
-dgks_classic.lua
+dgks.lua
