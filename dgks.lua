@@ -564,7 +564,7 @@ local function giveBroadcasts()
 			},
 			doguild = {
 				type = 'toggle',
-				name = 'Broadcast to Guild',
+				name = 'Broadcasts to/from Guild',
 				desc = 'Broadcast killshot to dgks users in guild.',
 				get = function()
 					return dgks.db.profile.doguild
@@ -580,7 +580,7 @@ local function giveBroadcasts()
 			},
 			doraid = {
 				type = 'toggle',
-				name = 'Broadcast to Party or Raid',
+				name = 'Broadcasts to/from Party/Raid/Instance',
 				desc = 'Broadcast killshot to dgks users in your paty or raid.',
 				get = function()
 					return dgks.db.profile.doraid
@@ -596,7 +596,7 @@ local function giveBroadcasts()
 			},
 			dobg = {
 				type = 'toggle',
-				name = 'Broadcast to Battleground',
+				name = 'Broadcast to/from Battleground',
 				desc = 'Broadcast killshot to battleground.',
 				get = function()
 					return dgks.db.profile.dobg
@@ -609,6 +609,22 @@ local function giveBroadcasts()
 				end,
 				width = "full",
 				order = 120
+			},
+			dofriends = {
+				type = 'toggle',
+				name = 'Broadcast to Friends',
+				desc = 'Broadcast killshot to friends.',
+				get = function()
+					return dgks.db.profile.dofriends
+				end,
+				set = function(info, e)
+					dgks.db.profile.dofriends = e
+				end,
+				disabled = function()
+					return not dgks.db.profile.dobroadcasts
+				end,
+				width = "full",
+				order = 125
 			},
 			versioncheck = {
 				type = 'execute',
@@ -1371,6 +1387,7 @@ local defaults = {
 		doguild = true,
 		dobg = true,
 		doraid = true,
+		dofriends = true,
 		dosound = true,
 		soundchannel = "Master",
 		dopve = false,
@@ -1441,10 +1458,10 @@ function dgks:OnInitialize()
 	
 	
 	-- Setup Comms
-	self:RegisterComm("dgks", "KillshotRX") --Killshots
+	self:RegisterComm("dgks") --Killshots
 	self:RegisterComm("dgksV") --Version check
 	self:RegisterComm("dgksVR") --Version check responses
-	self:RegisterComm("dgksDUEL", "DuelRX") --Duels
+	self:RegisterComm("dgksDUEL") --Duels
 end
 
 function dgks:SoundEventHandler(info, sound)
@@ -1551,76 +1568,6 @@ function dgks:CombatLogEventHandler(info, timestamp, event, hideCaster, sourceGU
 	end 
 end
 
-function dgks:KillshotRX(prefix, message, distribution, sender)
-	-- Deserialize variables from message to kso object
-	local ok,rxkiller,rxvictim,rxtimestamp,rxstreak,rxmultikill = dgks:Deserialize(message)
-	if not ok then
-		return
-	else 	
-		-- If Guild broadcast is off and we recieved a guild broadcast just return
-		if not dgks.db.profile.doguild and distribution == "GUILD" then return end
-		-- If raid broadcast is off and we recieved a raid broadcast just return
-		if not dgks.db.profile.doraid and distribution == "RAID" then return end
-		if not dgks.db.profile.doraid and distribution == "PARTY" then return end
-		
-		-- Check for duplicates here
-		if rxkiller == lastrxkiller and rxvictim == lastrxvictim and rxtimestamp == lastrxtimestamp then return	end
-		--@debug@
-		-- Dev Debugging functions
-		self:Print("DEBUG: " .. "KillshotRX received on "..distribution ..","..rxkiller..","..rxvictim..","..rxtimestamp..","..rxstreak..","..rxmultikill)
-		--@end-debug@		
-		lastrxkiller, lastrxvictim, lastrxtimestamp = rxkiller, rxvictim, rxtimestamp
-	
-		-- Generate Text
-		killshottext = string.gsub(string.gsub(dgks.db.profile.kstext, "$k", rxkiller), "$v", rxvictim)
-		
-		-- Send to sink for local output
-		self:ScrollText(killshottext)
-		 
-		-- Process multikill and play appropiate sound and text
-		if rxmultikill > 0 then
-			self:ScrollText(rxkiller .. " got a " .. self.db.profile.kstextM[rxmultikill] .. "!")
-			self:dgks_SoundPack(self.db.profile.kssoundM[rxmultikill])
-		else
-			self:dgks_SoundPack(dgks:GetKillshotSound(rxstreak))
-		end
-
-		-- We have landed a kill
-		if playerName == rxkiller then
-		
-			local setMaxStreak = false
-			
-			-- Increment maxstreak if this is a record high
-			if ( streak > dgks.db.profile.maxstreak ) then 
-				dgks.db.profile.maxstreak = streak
-				setMaxStreak = true
-			end
-		
-			if (dgks.db.profile.dotxtemote) then
-					emotestring=string.gsub(string.gsub(dgks.db.profile.ksemote, "$v", rxvictim), "$s", streak)
-					SendChatMessage(emotestring, "EMOTE")
-			end
-			if dgks.db.profile.doemote ~= "none" then
-				-- fixme targeting doesn't seem to work with NPCs
-				DoEmote(dgks.db.profile.doemote, rxvictim)
-			end
-			
-			-- This now triggers a global cool and most likely cannot work anymore
-			-- if dgks.db.profile.dopet then C_PetJournal.SummonRandomPet(allPets) end
-			
-			if dgks.db.profile.doscreenshotonkill then Screenshot()
-			elseif dgks.db.profile.doscreenshotonstreak and setMaxStreak then Screenshot()
-			elseif dgks.db.profile.doscreenshotonmultikill and rxmultikill > 0 then Screenshot() end
-			
-			-- Store in killList
-			if not dgks.db.profile.killList[rxvictim] then dgks.db.profile.killList[rxvictim] = {} end
-			tinsert(dgks.db.profile.killList[rxvictim], date("%m/%d/%y %H:%M:%S"))
-			--fixme this count my be inaccurate due to the way lua handles tables without numeric index
-			if (dgks.db.profile.dochatbox) then dgks:Print("You have killed "..rxvictim.." "..#dgks.db.profile.killList[rxvictim].." times.") end
-		end
-	end
-end
-
 function dgks:KillshotTX(txvictim,txtimestamp)
 	-- Process the detect killshot
 	-- Increment killshot streak 
@@ -1643,70 +1590,6 @@ function dgks:KillshotTX(txvictim,txtimestamp)
 	
 	-- Broadcast our Killshot
 	self:SendCM("dgks",dgks:Serialize(playerName,txvictim,txtimestamp,streak,multikill))
-	
-end
-
-function dgks:DuelRX(prefix, message, distribution, sender)
-	-- Deserialize variables from message to kso object
-	local ok,rxkiller,rxvictim,rxtimestamp,rxstreak,rxmultikill = dgks:Deserialize(message)
-	if not ok then
-		return
-	else 	
-		-- If Guild broadcast is off and we recieved a guild broadcast just return
-		if not dgks.db.profile.doguild and distribution == "GUILD" then return end
-		-- If raid broadcast is off and we recieved a raid broadcast just return
-		if not dgks.db.profile.doraid and distribution == "RAID" then return end
-		if not dgks.db.profile.doraid and distribution == "PARTY" then return end
-		
-		-- Check for duplicates here
-		if rxkiller == lastrxkiller and rxvictim == lastrxvictim and rxtimestamp == lastrxtimestamp then return	end
-		--@debug@
-		-- Dev Debugging functions
-		self:Print("DEBUG: " .. "DuelRX received on "..distribution ..","..rxkiller..","..rxvictim..","..rxtimestamp..","..rxstreak..","..rxmultikill)
-		--@end-debug@		
-		lastrxkiller, lastrxvictim, lastrxtimestamp = rxkiller, rxvictim, rxtimestamp
-	
-		-- Generate Text
-		killshottext = string.gsub(string.gsub(dgks.db.profile.dueltext, "$k", rxkiller), "$v", rxvictim)
-		
-		-- Send to sink for local output
-		self:ScrollText(killshottext)
-
-		self:dgks_SoundPack(dgks:GetKillshotSound(rxstreak))
-
-		-- We have landed a kill
-		if playerName == rxkiller then
-		
-			local setMaxStreak = false
-			
-			-- Increment maxstreak if this is a record high
-			if ( streak > dgks.db.profile.maxstreak ) then 
-				dgks.db.profile.maxstreak = streak
-				setMaxStreak = true
-			end
-		
-			if (dgks.db.profile.dueltxtemote) then
-					emotestring=string.gsub(string.gsub(dgks.db.profile.duelcustomemote, "$v", rxvictim), "$s", streak)
-					SendChatMessage(emotestring, "EMOTE")
-			end
-			if dgks.db.profile.duelemotewin ~= "none" then
-				-- fixme targeting doesn't seem to work with NPCs
-				DoEmote(dgks.db.profile.duelemotewin, rxvictim)
-			end
-			
-			-- This now triggers a global cool and most likely cannot work anymore
-			-- if dgks.db.profile.dopet then C_PetJournal.SummonRandomPet(allPets) end
-			
-			if dgks.db.profile.doscreenshotonduelwin then Screenshot()
-			elseif dgks.db.profile.doscreenshotonstreak and setMaxStreak then Screenshot() end
-			
-			-- Store in killList
-			if not dgks.db.profile.killList[rxvictim] then dgks.db.profile.killList[rxvictim] = {} end
-			tinsert(dgks.db.profile.killList[rxvictim], date("%m/%d/%y %H:%M:%S"))
-			--fixme this count my be inaccurate due to the way lua handles tables without numeric index
-			if (dgks.db.profile.dochatbox) then dgks:Print("You have defeated "..rxvictim.." "..#dgks.db.profile.killList[rxvictim].." times.") end
-		end
-	end
 	
 end
 
@@ -1742,25 +1625,116 @@ function dgks:PlayerLoss(myKiller)
 	end
 end
 
-function dgks:OnCommReceived(prefix, message, distribution, sender)
+function dgks:OnCommReceived(cchan, message, distribution, sender)
 	
+	--If broadcast type is off return
+	if not dgks.db.profile.dobroadcasts and distribution == "YELL" then return end 	
+	-- If Guild broadcast is off and we received a guild broadcast just return
+	if not dgks.db.profile.doguild and distribution == "GUILD" then return end
+	-- If raid broadcast is off and we received a raid broadcast just return
+	if not dgks.db.profile.doraid and distribution == "RAID" then return end
+	if not dgks.db.profile.doraid and distribution == "PARTY" then return end
+	if not dgks.db.profile.doraid and distribution == "INSTANCE_CHAT" then return end
+
 	local timestamp = time()
 	
-	if prefix == "dgksVR" then
-		-- Respone received
+	--Process non-serialized cchan
+	--@debug@
+	self:Print("Received: CChan= " .. cchan .. " " .. message .. distribution .. sender)
+	--@end-debug@
+	if cchan == "dgksVR" then
 		if sender ~= playerName then self:Print(sender .. " is on version " .. message) end
-	end
-	if prefix == "dgksV" then
+	
+	elseif cchan == "dgksV" then
 		-- Check for duplicates here
-		if sender == lastSender and message == lastMessage and timestamp == lastTimestamp then
-				return
-			end
+		if sender == lastSender and message == lastMessage and timestamp == lastTimestamp then return end
 		-- Respond with our version
 		self:Print(sender .. " is on version " .. message)
-		C_ChatInfo.SendAddonMessage("dgksVR", version, distribution, sender)
+		--FIXME Should this use SendCM function?
+		--C_ChatInfo.SendAddonMessage("dgksVR", version, WHISPER, sender)
+		--This should always be a direct whisper
+		self:SendCommMessage("dgksVR",version,WHISPER,sender)
+	
+	elseif cchan == "dgks" or "dgksDUEL" then
+		--Verify we have a valid event	
+		local ok,rxkiller,rxvictim,rxtimestamp,rxstreak,rxmultikill = dgks:Deserialize(message)
+		if not ok then return else
+	
+			--@debug@
+			-- Dev Debugging functions
+			self:Print("DEBUG: " .. "CM received on "..distribution ..","..rxkiller..","..rxvictim..","..rxtimestamp..","..rxstreak..","..rxmultikill)
+			--@end-debug@	
+			
+			-- Check for duplicates here
+			if rxkiller == lastrxkiller and rxvictim == lastrxvictim and rxtimestamp == lastrxtimestamp then return	end
+			-- Set duplicate prevention variables
+			lastrxkiller, lastrxvictim, lastrxtimestamp = rxkiller, rxvictim, rxtimestamp
 		
-		lastMessage, lastSender, lastTimestamp = message, sender, timestamp
+			-- Generate Text
+			if cchan == "dgks" then 
+				killshottext = string.gsub(string.gsub(dgks.db.profile.kstext, "$k", rxkiller), "$v", rxvictim)
+				-- Killshot Emotes
+				if (dgks.db.profile.dotxtemote) then
+					emotestring=string.gsub(string.gsub(dgks.db.profile.ksemote, "$v", rxvictim), "$s", streak)
+					SendChatMessage(emotestring, "EMOTE")
+				end
+				if dgks.db.profile.doemote ~= "none" then
+					-- fixme targeting doesn't seem to work with NPCs
+					DoEmote(dgks.db.profile.doemote, rxvictim)
+				end
+			else
+				killshottext = string.gsub(string.gsub(dgks.db.profile.dueltext, "$k", rxkiller), "$v", rxvictim)
+				--Duel Emotes
+				if (dgks.db.profile.dueltxtemote) then
+					emotestring=string.gsub(string.gsub(dgks.db.profile.duelcustomemote, "$v", rxvictim), "$s", streak)
+					SendChatMessage(emotestring, "EMOTE")
+				end
+				if dgks.db.profile.duelemotewin ~= "none" then
+					-- fixme targeting doesn't seem to work with NPCs
+					DoEmote(dgks.db.profile.duelemotewin, rxvictim)
+				end
+			end
+			
+			-- Send to sink for local output
+			self:ScrollText(killshottext)
+			
+			-- Process multikill and play appropiate sound and text
+			if rxmultikill > 0 then
+				self:ScrollText(rxkiller .. " got a " .. self.db.profile.kstextM[rxmultikill] .. "!")
+				self:dgks_SoundPack(self.db.profile.kssoundM[rxmultikill])
+			else
+				self:dgks_SoundPack(dgks:GetKillshotSound(rxstreak))
+			end
+
+			-- We have landed a kill
+			if playerName == rxkiller then
+				local setMaxStreak = false
+				
+				-- Increment maxstreak if this is a record high
+				if ( streak > dgks.db.profile.maxstreak ) then 
+					dgks.db.profile.maxstreak = streak
+					setMaxStreak = true
+				end
+						
+				-- This now triggers a global cool and most likely cannot work anymore
+				-- if dgks.db.profile.dopet then C_PetJournal.SummonRandomPet(allPets) end
+				
+				if dgks.db.profile.doscreenshotonkill then Screenshot()
+				elseif dgks.db.profile.doscreenshotonstreak and setMaxStreak then Screenshot()
+				elseif dgks.db.profile.doscreenshotonmultikill and rxmultikill > 0 then Screenshot() end
+				
+				-- Store in killList
+				if not dgks.db.profile.killList[rxvictim] then dgks.db.profile.killList[rxvictim] = {} end
+				tinsert(dgks.db.profile.killList[rxvictim], date("%m/%d/%y %H:%M:%S"))
+				--fixme this count my be inaccurate due to the way lua handles tables without numeric index
+				if (dgks.db.profile.dochatbox) then dgks:Print("You have killed "..rxvictim.." "..#dgks.db.profile.killList[rxvictim].." times.") end
+			end
+		end
 	end
+
+	--Set duplicate prevention variables
+	lastMessage, lastSender, lastTimestamp = message, sender, timestamp
+
 end
 
 function dgks:PlayerDeath(myKiller)
@@ -1821,7 +1795,7 @@ end
 
 -- FIXME Entire version checking needs cleanup for duplicate sends
 function dgks:VersionCheck()
-    self:SendCM("dgskV",version)
+    self:SendCM("dgksV",version)
 end
 
 function dgks:dgks_SoundPack(sound)
@@ -1862,6 +1836,11 @@ end
 function dgks:SendCM(cchan,msg)
 	-- Example usage: self:SendCM("dgksDUEL",dgks:Serialize(playerName,txvictim,txtimestamp,streak,multikill)
 
+	--@debug@
+	self:Print("Sending: CChan= " .. cchan .. " " .. msg .. " to WHISPER")
+	--@end-debug@
+
+
 	-- Whisper to ourselves just in case broadcasts are off
 	self:SendCommMessage(cchan,msg,"WHISPER",playerName)
 
@@ -1871,20 +1850,59 @@ function dgks:SendCM(cchan,msg)
 		-- https://wowpedia.fandom.com/wiki/WOW_PROJECT_ID
 		if not WOW_PROJECT_ID == 1 then
 			self:SendCommMessage(cchan,msg,"YELL")
+			--@debug@
+			self:Print("Sending: CChan= " .. cchan .. " " .. msg .. " to YELL")
+			--@end-debug@
+
 		end
 
 		if dgks.db.profile.doguild and IsInGuild() then
 			self:SendCommMessage(cchan,msg,"GUILD")
+			--@debug@
+			self:Print("Sending: CChan= " .. cchan .. " " .. msg .. " to GUILD")
+			--@end-debug@
+
 		end
 		if dgks.db.profile.dobg and UnitInBattleground("Player") then
 			self:SendCommMessage(cchan,msg,"INSTANCE_CHAT")
+			--@debug@
+			self:Print("Sending: CChan= " .. cchan .. " " .. msg .. " to INSTANCE_CHAT")
+			--@end-debug@
+
 		end
 		if dgks.db.profile.doraid then
 			-- Raid/Party Broadcast on
 			if IsInRaid() and not inArena and not UnitInBattleground("Player") then
 				self:SendCommMessage(cchan,msg,"RAID") 
-			else 
+				--@debug@
+				self:Print("Sending: CChan= " .. cchan .. " " .. msg .. " to RAID")
+				--@end-debug@
+
+			elseif inArena or UnitInBattleground("Player") then
+				self:SendCommMessage(cchan,msg,"INSTANCE_CHAT") 
+				--@debug@
+				self:Print("Sending: CChan= " .. cchan .. " " .. msg .. " to INSTANCE_CHAT")
+				--@end-debug@
+
+			elseif UnitInParty("Player") then
 				self:SendCommMessage(cchan,msg,"PARTY")
+				--@debug@
+				self:Print("Sending: CChan= " .. cchan .. " " .. msg .. " to PARTY")
+				--@end-debug@
+
+			end
+		end
+		--Whisper to friends
+		if dgks.db.profile.dofriends then
+			for i = 1, C_FriendList.GetNumFriends() do
+				local info = C_FriendList.GetFriendInfoByIndex(i)
+				if info and info.connected then
+					self:SendCommMessage(cchan,msg,"WHISPER",info.name)
+					--@debug@
+					self:Print("Sending: CChan= " .. cchan .. " " .. msg .. " to WHISPER " .. info.name)
+					--@end-debug@
+					--C_ChatInfo.SendAddonMessage(prefix, message, "WHISPER", info.name)
+				end
 			end
 		end
 	end
