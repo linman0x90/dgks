@@ -12,7 +12,6 @@
 	-- Random Emote
 --Reduce externals/libs
 --NPC Emote Targeting
---FIXME Remove classic emotes
 --Just making a change so twitch triggers an update
 --Cross Character Killer Klvl Kclass KGuild Victim Vlvl VClass VGuild Timestamp Location Killshot_Log
 --Cross server ranking system (bnet channels)
@@ -1895,13 +1894,39 @@ function dgks:SendCM(cchan,msg)
 		--Whisper to friends
 		if dgks.db.profile.dofriends then
 			for i = 1, C_FriendList.GetNumFriends() do
-				local info = C_FriendList.GetFriendInfoByIndex(i)
+				local info = C_BattleNet.GetFriendGameAccountInfo(i,t)
 				if info and info.connected then
 					self:SendCommMessage(cchan,msg,"WHISPER",info.name)
 					--@debug@
 					self:Print("Sending: CChan= " .. cchan .. " " .. msg .. " to WHISPER " .. info.name)
 					--@end-debug@
 					--C_ChatInfo.SendAddonMessage(prefix, message, "WHISPER", info.name)
+				end
+			end
+			--Battle.net friends
+
+			--@debug@
+			for i = 1, BNGetNumFriends() do
+				for j = 1, C_BattleNet.GetFriendNumGameAccounts(i) do
+					local game = C_BattleNet.GetFriendGameAccountInfo(i, j)
+					if game.isOnline and game.factionName then
+						print(game.gameAccountID, game.isOnline, game.factionName, UnitFactionGroup("player"), game.realmName, GetRealmName())
+					end
+				end
+			end
+			--@end-debug@
+
+			for i = 1, BNGetNumFriends() do
+				for j = 1, C_BattleNet.GetFriendNumGameAccounts(i) do
+					local game = C_BattleNet.GetFriendGameAccountInfo(i, j)
+					if game.realmName == GetRealmName() and game.factionName == UnitFactionGroup("player") then
+						self:SendCommMessage(cchan,msg,"WHISPER",game.characterName)
+						
+						--@debug@
+						self:Print("Sending: CChan= " .. cchan .. " " .. msg .. " to WHISPER " .. game.characterName)
+						--@end-debug@
+						--C_ChatInfo.SendAddonMessage(prefix, message, "WHISPER", info.name)
+					end
 				end
 			end
 		end
