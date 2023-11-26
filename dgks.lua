@@ -28,12 +28,12 @@ local lastkill = 0
 local timestamp = 0
 local lastToHurtMe = ""
 local newestconfigversion = 1
-local inbg
 local frame, events = CreateFrame("Frame"), {};
 local damageDealers = {}
 local targetList = {} -- Used for Execute
 local playerName = UnitName("Player")
-local inArena = 0
+local inArena = false
+local inBG = false
 local lastMessage, lastSender, lastTimestamp --Versionchecking duplicate detection
 
 dgks = LibStub("AceAddon-3.0"):NewAddon("dgks", "AceEvent-3.0", "AceConsole-3.0", "LibSink-2.0","AceComm-3.0","AceSerializer-3.0")
@@ -1835,13 +1835,13 @@ end
 function dgks:SendCM(cchan,msg)
 	-- Example usage: self:SendCM("dgksDUEL",dgks:Serialize(playerName,txvictim,txtimestamp,streak,multikill)
 
-	--@debug@
-	self:Print("Sending: CChan= " .. cchan .. " " .. msg .. " to WHISPER")
-	--@end-debug@
-
-
-	-- Whisper to ourselves just in case broadcasts are off
-	self:SendCommMessage(cchan,msg,"WHISPER",playerName)
+	-- Whisper to ourselves if broadcasts are off or guild is off or we are not in a guild
+	if not dgks.db.profile.dobroadcasts or not dgks.db.profile.doguild or not IsInGuild() then
+		--@debug@
+		self:Print("Sending: CChan= " .. cchan .. " " .. msg .. " to WHISPER self")
+		--@end-debug@
+		self:SendCommMessage(cchan,msg,"WHISPER",playerName)
+	end
 
 	if dgks.db.profile.dobroadcasts then
 
@@ -1862,28 +1862,37 @@ function dgks:SendCM(cchan,msg)
 			--@end-debug@
 
 		end
-		if dgks.db.profile.dobg and UnitInBattleground("Player") then
-			self:SendCommMessage(cchan,msg,"INSTANCE_CHAT")
-			--@debug@
-			self:Print("Sending: CChan= " .. cchan .. " " .. msg .. " to INSTANCE_CHAT")
-			--@end-debug@
 
+		-- Send to Battleground / Arena	
+		if dgks.db.profile.dobg then
+			if inBG or inArena then 
+				--@debug@
+				self:Print("Sending: BG CChan= " .. cchan .. " " .. msg .. " to INSTANCE_CHAT")
+				--@end-debug@
+				self:SendCommMessage(cchan,msg,"INSTANCE_CHAT")
+			end
 		end
+
+		-- Send to Raid
+		-- LFG style parties and raids use INSTANCE_CHAT
 		if dgks.db.profile.doraid then
 			-- Raid/Party Broadcast on
-			if IsInRaid() and not inArena and not UnitInBattleground("Player") then
-				self:SendCommMessage(cchan,msg,"RAID") 
+
+			--Standard Raid
+			if IsInRaid(LE_PARTY_CATEGORY_HOME) and not inArena and not inBG then
 				--@debug@
 				self:Print("Sending: CChan= " .. cchan .. " " .. msg .. " to RAID")
 				--@end-debug@
-
-			elseif inArena or UnitInBattleground("Player") then
-				self:SendCommMessage(cchan,msg,"INSTANCE_CHAT") 
+				self:SendCommMessage(cchan,msg,"RAID") 
+		
+			-- LFG or Group Finder Raid
+			elseif IsInRaid(LE_PARTY_CATEGORY_INSTANCE) and not inArena and not inBG then
 				--@debug@
-				self:Print("Sending: CChan= " .. cchan .. " " .. msg .. " to INSTANCE_CHAT")
+				self:Print("Sending: RAID CChan= " .. cchan .. " " .. msg .. " to INSTANCE_CHAT")
 				--@end-debug@
-
-			elseif UnitInParty("Player") then
+				self:SendCommMessage(cchan,msg,"INSTANCE_CHAT") 
+				
+			elseif UnitInParty("Player") and not inArena and not inBG then
 				self:SendCommMessage(cchan,msg,"PARTY")
 				--@debug@
 				self:Print("Sending: CChan= " .. cchan .. " " .. msg .. " to PARTY")
@@ -1891,14 +1900,15 @@ function dgks:SendCM(cchan,msg)
 
 			end
 		end
+
 		--Whisper to friends
 		if dgks.db.profile.dofriends then
 			for i = 1, C_FriendList.GetNumFriends() do
-				local info = C_BattleNet.GetFriendGameAccountInfo(i,t)
+				local info = C_FriendList.GetFriendInfoByIndex(i)
 				if info and info.connected then
 					self:SendCommMessage(cchan,msg,"WHISPER",info.name)
 					--@debug@
-					self:Print("Sending: CChan= " .. cchan .. " " .. msg .. " to WHISPER " .. info.name)
+					self:Print("Sending: CChan= " .. cchan .. " " .. msg .. " to WHISPER " .. " Name: " .. info.name)
 					--@end-debug@
 					--C_ChatInfo.SendAddonMessage(prefix, message, "WHISPER", info.name)
 				end
@@ -1906,14 +1916,14 @@ function dgks:SendCM(cchan,msg)
 			--Battle.net friends
 
 			--@debug@
-			for i = 1, BNGetNumFriends() do
-				for j = 1, C_BattleNet.GetFriendNumGameAccounts(i) do
-					local game = C_BattleNet.GetFriendGameAccountInfo(i, j)
-					if game.isOnline and game.factionName then
-						print(game.gameAccountID, game.isOnline, game.factionName, UnitFactionGroup("player"), game.realmName, GetRealmName())
-					end
-				end
-			end
+			--for i = 1, BNGetNumFriends() do
+			--	for j = 1, C_BattleNet.GetFriendNumGameAccounts(i) do
+			--		local game = C_BattleNet.GetFriendGameAccountInfo(i, j)
+			--		if game.isOnline and game.factionName then
+			--			print(game.gameAccountID, game.isOnline, game.factionName, UnitFactionGroup("player"), game.realmName, GetRealmName())
+			--		end
+			--	end
+			--end
 			--@end-debug@
 
 			for i = 1, BNGetNumFriends() do
@@ -1974,7 +1984,9 @@ function events:ZONE_CHANGED_NEW_AREA(info, event, ...)
 		deathstreak = 0
 	end
 
-	inArena = IsActiveBattlefieldArena() or false
+	-- Check for Arena and Battleground
+	if IsActiveBattlefieldArena() ~=nil then inArena = true else inArena = false end
+	if UnitInBattleground("Player") ~= nil then inBG = true else inBG = false end
 
 	--if (dgks.db.profile.dopreparesound) then
 		--local junk
