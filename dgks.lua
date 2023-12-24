@@ -31,10 +31,16 @@ local newestconfigversion = 1
 local frame, events = CreateFrame("Frame"), {};
 local damageDealers = {}
 local targetList = {} -- Used for Execute
-local playerName = UnitName("Player")
+local playerName = UnitName("player")
 local inArena = false
 local inBG = false
 local lastMessage, lastSender, lastTimestamp --Versionchecking duplicate detection
+
+--Do not load if this is dgks_classic and dgks is already loaded
+--[[ if C_AddOns.IsAddOnLoaded("dgks") then
+	SendSystemMessage("dG Killshot already loaded. Please uninstall dG Killshot Classic")
+	return
+end ]]--
 
 dgks = LibStub("AceAddon-3.0"):NewAddon("dgks", "AceEvent-3.0", "AceConsole-3.0", "LibSink-2.0","AceComm-3.0","AceSerializer-3.0")
 
@@ -398,7 +404,6 @@ local function giveGeneral()
 					THREATEN = "Threaten",
 					TICKLE = "Tickle",
 					TIRED = "Tired",
-					THANK = "Thank",
 					VETO = "Veto",
 					VICTORY = "Victory",
 					VIOLIN = "Violin",
@@ -408,8 +413,7 @@ local function giveGeneral()
 					WHISTLE = "Whistle",
 					WINK = "Wink",
 					WORK = "Work",
-					YAWN = "Yawn",
-					NOD = "Yes"
+					YAWN = "Yawn"
 				},
 				order = 25
 				},
@@ -884,7 +888,6 @@ local function giveDuels()
 					THREATEN = "Threaten",
 					TICKLE = "Tickle",
 					TIRED = "Tired",
-					THANK = "Thank",
 					VETO = "Veto",
 					VICTORY = "Victory",
 					VIOLIN = "Violin",
@@ -894,8 +897,7 @@ local function giveDuels()
 					WHISTLE = "Whistle",
 					WINK = "Wink",
 					WORK = "Work",
-					YAWN = "Yawn",
-					NOD = "Yes"
+					YAWN = "Yawn"
 				},
 				order = 25
 				},
@@ -981,7 +983,6 @@ local function giveDuels()
 					MOON = "Moon",
 					MOURN = "Mourn",
 					NO = "No",
-					NOD = "Nod",
 					NOSEPICK = "Nosepick",
 					PAT = "Pat",
 					PEER = "Peer",
@@ -1030,7 +1031,6 @@ local function giveDuels()
 					THREATEN = "Threaten",
 					TICKLE = "Tickle",
 					TIRED = "Tired",
-					THANK = "Thank",
 					VETO = "Veto",
 					VICTORY = "Victory",
 					VIOLIN = "Violin",
@@ -1493,8 +1493,8 @@ function dgks:CombatLogEventHandler(info, timestamp, event, hideCaster, sourceGU
 							
 				--@debug@
 				-- Dev Debugging functions
-				self:Print("DEBUG: " .. UnitName("player") .. " has landed the kill.")
-				self:Print("DEBUG: " .. "Sending "..destName.." and "..timestamp.." to KillshotTX." )
+				self.Print("DEBUG: " .. UnitName("player") .. " has landed the kill.")
+				self.Print("DEBUG: " .. "Sending "..destName.." and "..timestamp.." to KillshotTX." )
 				--@end-debug@
 				
 				-- The player has landed a killshot
@@ -1673,22 +1673,22 @@ function dgks:OnCommReceived(cchan, message, distribution, sender)
 			if cchan == "dgks" then 
 				killshottext = string.gsub(string.gsub(dgks.db.profile.kstext, "$k", rxkiller), "$v", rxvictim)
 				-- Killshot Emotes
-				if (dgks.db.profile.dotxtemote) then
+				if (dgks.db.profile.dotxtemote and playerName == rxkiller) then
 					emotestring=string.gsub(string.gsub(dgks.db.profile.ksemote, "$v", rxvictim), "$s", streak)
 					SendChatMessage(emotestring, "EMOTE")
 				end
-				if dgks.db.profile.doemote ~= "none" then
+				if (dgks.db.profile.doemote ~= "none" and playerName == rxkiller) then
 					-- fixme targeting doesn't seem to work with NPCs
 					DoEmote(dgks.db.profile.doemote, rxvictim)
 				end
 			else
 				killshottext = string.gsub(string.gsub(dgks.db.profile.dueltext, "$k", rxkiller), "$v", rxvictim)
 				--Duel Emotes
-				if (dgks.db.profile.dueltxtemote) then
+				if (dgks.db.profile.dueltxtemote and playerName == rxkiller) then
 					emotestring=string.gsub(string.gsub(dgks.db.profile.duelcustomemote, "$v", rxvictim), "$s", streak)
 					SendChatMessage(emotestring, "EMOTE")
 				end
-				if dgks.db.profile.duelemotewin ~= "none" then
+				if (dgks.db.profile.duelemotewin ~= "none" and playerName == rxkiller) then
 					-- fixme targeting doesn't seem to work with NPCs
 					DoEmote(dgks.db.profile.duelemotewin, rxvictim)
 				end
@@ -1892,7 +1892,7 @@ function dgks:SendCM(cchan,msg)
 				--@end-debug@
 				self:SendCommMessage(cchan,msg,"INSTANCE_CHAT") 
 				
-			elseif UnitInParty("Player") and not inArena and not inBG then
+			elseif UnitInParty("player") and not inArena and not inBG then
 				self:SendCommMessage(cchan,msg,"PARTY")
 				--@debug@
 				self:Print("Sending: CChan= " .. cchan .. " " .. msg .. " to PARTY")
