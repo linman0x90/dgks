@@ -38,11 +38,6 @@ local inBG = false
 local lastMessage, lastSender, lastTimestamp --Versionchecking duplicate detection
 local soundPath = "Interface\\AddOns\\dgks\\sounds\\"
 
---Do not load if this is dgks_classic and dgks is already loaded
---[[ if C_AddOns.IsAddOnLoaded("dgks") then
-	SendSystemMessage("dG Killshot already loaded. Please uninstall dG Killshot Classic")
-	return
-end ]]--
 
 dgks = LibStub("AceAddon-3.0"):NewAddon("dgks", "AceEvent-3.0", "AceConsole-3.0", "LibSink-2.0","AceComm-3.0","AceSerializer-3.0")
 
@@ -458,7 +453,7 @@ local function giveGeneral()
 				end,
 				width = "full",
 				order = 50
-			},			
+			},
 			kstext = {
 				type = 'input',
 				name = 'Scrolling Text Message',
@@ -1368,7 +1363,7 @@ local defaults = {
 		duelcustomemote = "has defended his honor against $v! Streak of $s!",
 		kstext = "$k killed $v!",
 		dueltext = "$k has defeated $v!",
-		soundpack = "male", 
+		soundpack = "male",
 		soundpath = soundPath,
 		dotxtemote = false,
 		doemote = "none",
@@ -1448,7 +1443,8 @@ function dgks:OnInitialize()
 	AceConfigDialog:AddToBlizOptions("dG KillShot Screenshots", "Screenshots", "dG KillShot")
 	AceConfigDialog:AddToBlizOptions("dG KillShot Duels", "Duels", "dG KillShot")
 	AceConfigDialog:AddToBlizOptions("dG KillShot Ranks", "Ranks", "dG KillShot")
-	AceConfigDialog:AddToBlizOptions("dG KillShot File Setup", "Sound File Setup", "dG KillShot")
+	-- Clean up UI
+	-- AceConfigDialog:AddToBlizOptions("dG KillShot File Setup", "Sound File Setup", "dG KillShot")
 	AceConfigDialog:AddToBlizOptions("dG KillShot Output", "Combat Text Output", "dG KillShot")
     
 
@@ -1641,7 +1637,7 @@ function dgks:OnCommReceived(cchan, message, distribution, sender)
 	
 	--Process non-serialized cchan
 	--@debug@
-	self:Print("Received: CChan= " .. cchan .. " " .. message .. distribution .. sender)
+	self:Print("OnCommReceived: CChan= " .. cchan .. " " .. message .. distribution .. sender)
 	--@end-debug@
 	if cchan == "dgksVR" then
 		if sender ~= playerName then self:Print(sender .. " is on version " .. message) end
@@ -1660,12 +1656,7 @@ function dgks:OnCommReceived(cchan, message, distribution, sender)
 		--Verify we have a valid event	
 		local ok,rxkiller,rxvictim,rxtimestamp,rxstreak,rxmultikill = dgks:Deserialize(message)
 		if not ok then return else
-	
-			--@debug@
-			-- Dev Debugging functions
-			self:Print("DEBUG: " .. "CM received on "..distribution ..","..rxkiller..","..rxvictim..","..rxtimestamp..","..rxstreak..","..rxmultikill)
-			--@end-debug@	
-			
+		
 			-- Check for duplicates here
 			if rxkiller == lastrxkiller and rxvictim == lastrxvictim and rxtimestamp == lastrxtimestamp then return	end
 			-- Set duplicate prevention variables
@@ -1849,7 +1840,7 @@ function dgks:SendCM(cchan,msg)
 
 		-- If not Retail, send to yell
 		-- https://wowpedia.fandom.com/wiki/WOW_PROJECT_ID
-		if not WOW_PROJECT_ID == 1 then
+		if WOW_PROJECT_ID ~= 1 then
 			self:SendCommMessage(cchan,msg,"YELL")
 			--@debug@
 			self:Print("Sending: CChan= " .. cchan .. " " .. msg .. " to YELL")
@@ -1886,15 +1877,17 @@ function dgks:SendCM(cchan,msg)
 				self:Print("Sending: CChan= " .. cchan .. " " .. msg .. " to RAID")
 				--@end-debug@
 				self:SendCommMessage(cchan,msg,"RAID") 
-		
-			-- LFG or Group Finder Raid
-			elseif IsInRaid(LE_PARTY_CATEGORY_INSTANCE) and not inArena and not inBG then
+			end
+
+				-- LFG or Group Finder Raid
+			if IsInRaid(LE_PARTY_CATEGORY_INSTANCE) and not inArena and not inBG then
 				--@debug@
 				self:Print("Sending: RAID CChan= " .. cchan .. " " .. msg .. " to INSTANCE_CHAT")
 				--@end-debug@
-				self:SendCommMessage(cchan,msg,"INSTANCE_CHAT") 
-				
-			elseif UnitInParty("player") and not inArena and not inBG then
+				self:SendCommMessage(cchan,msg,"INSTANCE_CHAT")
+			end
+
+			if UnitInParty("player") and not inArena and not inBG then
 				self:SendCommMessage(cchan,msg,"PARTY")
 				--@debug@
 				self:Print("Sending: CChan= " .. cchan .. " " .. msg .. " to PARTY")
@@ -1928,10 +1921,18 @@ function dgks:SendCM(cchan,msg)
 			--end
 			--@end-debug@
 
-			for i = 1, BNGetNumFriends() do
+			local totalBFriends, onlineBFriends = BNGetNumFriends()
+			for i = 1, onlineBFriends  do
 				for j = 1, C_BattleNet.GetFriendNumGameAccounts(i) do
 					local game = C_BattleNet.GetFriendGameAccountInfo(i, j)
-					if game.realmName == GetRealmName() and game.factionName == UnitFactionGroup("player") then
+					if game.characterName == nil or game.realmName == nil or game.factionName == nil then
+						break
+					end
+							--@debug@
+							self:Print("BNET: " .. j .. "Name: " .. game.characterName .. "Realm: " .. game.realmName .. GetRealmName())
+							--@end-debug@
+					--if game.realmName == GetRealmName() and game.factionName == UnitFactionGroup("player") then
+					if game.factionName == UnitFactionGroup("player") then
 						self:SendCommMessage(cchan,msg,"WHISPER",game.characterName)
 						
 						--@debug@
@@ -1943,7 +1944,7 @@ function dgks:SendCM(cchan,msg)
 			end
 		end
 	end
-end	
+end
 
 --@debug@
 -- Dev Debugging functions
