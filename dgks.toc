@@ -1,4 +1,4 @@
-## Interface: 30403
+## Interface: 11506, 11507, 20504, 30404, 40401, 40402, 50500, 110105, 110107, 110200
 ## Title: dG KillShot
 ## Notes: Lets people know you got a killshot.
 ## Author: @project-author@ 
@@ -24,5 +24,5 @@ Libs\AceComm-3.0\AceComm-3.0.xml
 Libs\AceSerializer-3.0\AceSerializer-3.0.xml
 Libs\LibSink-2.0\LibSink-2.0\lib.xml
 #@end-no-lib-strip@
-##dgks_emotes.lua
+dgks_emotes.lua [AllowLoadGameType classic, vanilla, tbc, cata, mists]
 dgks.lua
