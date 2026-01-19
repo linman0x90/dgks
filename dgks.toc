@@ -1,4 +1,4 @@
-## Interface: 11506, 11507, 20504, 30404, 40401, 40402, 50500, 110105, 110107, 110200
+## Interface: 11506, 11507, 20504, 20505, 30404, 40401, 40402, 50500, 50503 110105, 110107, 110200
 ## Title: dG KillShot
 ## Notes: Lets people know you got a killshot.
 ## Author: @project-author@ 
