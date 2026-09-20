@@ -38,6 +38,7 @@ local frame, events = CreateFrame("Frame"), {};
 local damageDealers = {}
 local targetList = {} -- Used for Execute
 local playerName = UnitName("player")
+local playerGUID = UnitGUID("player")
 local inArena = false
 local inBG = false
 local lastMessage, lastSender, lastTimestamp --Versionchecking duplicate detection
@@ -371,6 +372,7 @@ local function giveGeneral()
 					PRAISE = "Praise",
 					PRAY = "Pray",
 					PURR = "Purr",
+					PULSE = "Pulse",
 					PUZZLE = "Puzzled",
 					TALKQ = "Question",
 					RAISE = "Raise",
@@ -1448,7 +1450,7 @@ function dgks:OnInitialize()
 	
 	local AceConfigDialog = LibStub("AceConfigDialog-3.0")
 	
-	AceConfigDialog:AddToBlizOptions("dG KillShot", "dG KillShot")
+	local ref, cat = AceConfigDialog:AddToBlizOptions("dG KillShot", "dG KillShot")
 	AceConfigDialog:AddToBlizOptions("dG KillShot General", "General", "dG KillShot")
 	AceConfigDialog:AddToBlizOptions("dG KillShot Broadcasts", "Broadcasts", "dG KillShot")
 	AceConfigDialog:AddToBlizOptions("dG KillShot Screenshots", "Screenshots", "dG KillShot")
@@ -1457,14 +1459,18 @@ function dgks:OnInitialize()
 	-- Clean up UI
 	-- AceConfigDialog:AddToBlizOptions("dG KillShot File Setup", "Sound File Setup", "dG KillShot")
 	AceConfigDialog:AddToBlizOptions("dG KillShot Output", "Combat Text Output", "dG KillShot")
-    
 
-	-- Setup slash commands
-	-- The triple call fixes bug that doesn't open on first run and expans the sub pages
-	self:RegisterChatCommand("dgks", function() Settings.OpenToCategory("dG KillShot") end)
-	self:RegisterChatCommand("ks", function() Settings.OpenToCategory("dG KillShot") end)
+	--Setup slash commands
+	--dgks:RegisterChatCommand("dgks", function() Settings.OpenToCategory(category.GetID()) end)
+	--dgks:RegisterChatCommand("ks", function() Settings.OpenToCategory(category.GetID()) end)
 	
 	
+	SLASH_DGKS1 = "/dgks"
+	SLASH_DGKS2 = "/ks"
+	SlashCmdList.DGKS = function()
+		Settings.OpenToCategory(cat)
+	end
+
 	-- Setup Comms
 	self:RegisterComm("dgks") --Killshots
 	self:RegisterComm("dgksV") --Version check
@@ -1994,10 +2000,43 @@ function dgks:TestPlayerDeath()
 end
 --@end-debug@
 
-function events:COMBAT_LOG_EVENT_UNFILTERED(info, event, ...)
-	local timestamp, event, hideCaster, sourceGUID, sourceName, sourceFlags, sourceFlags2, destGUID, destName, destFlags, destFlags2 = CombatLogGetCurrentEventInfo()
-	dgks:CombatLogEventHandler(info, timestamp, event, hideCaster, sourceGUID, sourceName, sourceFlags, sourceFlags2, destGUID, destName, destFlags, destFlags2, ...)
-end
+if WOW_PROJECT_ID ~= 1 then -- 1 is Retail
+	-- This is causing issues in 12.0 since CLEU is no longer available
+	function events:COMBAT_LOG_EVENT_UNFILTERED(info, event, ...)
+		local timestamp, event, hideCaster, sourceGUID, sourceName, sourceFlags, sourceFlags2, destGUID, destName, destFlags, destFlags2 = CombatLogGetCurrentEventInfo()
+		dgks:CombatLogEventHandler(info, timestamp, event, hideCaster, sourceGUID, sourceName, sourceFlags, sourceFlags2, destGUID, destName, destFlags, destFlags2, ...)
+	end 
+ else
+	-- Retail fix
+	function events:PARTY_KILL(attackerGUID, targetGUID)
+		--Only proceed if Victim was or we are in PvE mode
+		if  UnitIsPlayer(targetGUID) or dgks.db.profile.dopve then
+			local timestamp = GetTime()
+			--@debug@
+				dgks:Print("DEBUG: PARTY_KILL: attackerGUID: " .. attackerGUID .. " targetGUID: " .. targetGUID .. " Target_UnitIsPlayer: " .. tostring(UnitIsPlayer(targetGUID)))
+			--@end-debug@
+			local _, _, _, _, _, aName, playerServer = GetPlayerInfoByGUID(attackerGUID)
+			local _, _, _, _, _, vName, playerServer = GetPlayerInfoByGUID(targetGUID)
+			if attackerGUID == playerGUID then -- and UnitIsPlayer(targetGUID) then
+				if vName == nil then
+					--Could be an NPC
+					vName, playerServer = UnitNameFromGUID(targetGUID)		
+				end
+				if vName == nil then
+					--This dumb game...
+					vName = "NIL"
+				end
+				--@debug@
+					dgks:Print("DEBUG: " .. aName .. " has landed the kill.")
+					dgks:Print("DEBUG: " .. "Sending "..vName.." and "..timestamp.." to KillshotTX." )
+				--@end-debug@
+				-- The player has landed a killshot
+				dgks:Print("DEBUG: We killed Victum Name: " .. vName)
+				dgks:KillshotTX(vName, timestamp)
+			end --if attackerGUID
+		end --if UnitIsPlayer
+	end
+end 
 
 function events:ZONE_CHANGED_NEW_AREA(info, event, ...)
 	
@@ -2024,9 +2063,9 @@ function events:CHAT_MSG_BG_SYSTEM_NEUTRAL(msg, ...)
 	if (dgks.db.profile.dopreparesound) then
 		if msg == "The battle begins in 30 seconds!" then dgks:dgks_SoundPack(dgks.db.profile.kssoundP) end
 	end
-end
+end 
 
-function events:CHAT_MSG_SYSTEM(msg, ...)
+ function events:CHAT_MSG_SYSTEM(msg, ...)
 	-- Prepare for Duel
 	if (dgks.db.profile.dopreparesound) then
 		if msg == format(DUEL_COUNTDOWN,3) then dgks:dgks_SoundPack(dgks.db.profile.kssoundP) end
@@ -2055,7 +2094,7 @@ function events:CHAT_MSG_SYSTEM(msg, ...)
 		--dgks:Print("DEBUG: " .. msg)
 		--@end-debug@
 	end
-end
+end 
 
 function dgks:OnEnable()
 	--self:RegisterEvent("CHAT_MSG_ADDON", "AddonMessageHandler")
