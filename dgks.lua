@@ -20,10 +20,10 @@
 --2/18 17:11:17.231  SPELL_AURA_APPLIED,Player-5814-01E766E1,"Armena-LoneWolf",0x548,0x0,Player-5814-01E766E1,"Armena-LoneWolf",0x548,0x0,436097,"Blood Moon",0x1,BUFF
 --2/18 17:30:38.447  SPELL_AURA_REMOVED,Player-5814-01D25EEF,"Nop-LoneWolf",0x511,0x1,Player-5814-01D25EEF,"Nop-LoneWolf",0x511,0x1,436097,"Blood Moon",0x1,BUFF
 
-
 local version = "@project-version@"
 local databaseversion = "1"
 local addonName, ns = ...
+local msg = ""
 local streak = 0
 local deathstreak = 0
 local multikill = 0
@@ -34,11 +34,10 @@ local lastkill = 0
 local timestamp = 0
 local lastToHurtMe = ""
 local newestconfigversion = 1
-local frame, events = CreateFrame("Frame"), {};
+local frame, events = CreateFrame("Frame"), {}; -- Event Frame
 local damageDealers = {}
 local targetList = {} -- Used for Execute
-local playerName = UnitName("player")
-local playerGUID = UnitGUID("player")
+local playerGUID, playerClass, _, playerRace, playerSex, playerName
 local inArena = false
 local inBG = false
 local lastMessage, lastSender, lastTimestamp --Versionchecking duplicate detection
@@ -1394,7 +1393,7 @@ local defaults = {
 		dosound = true,
 		soundchannel = "Master",
 		dopve = false,
-		dozonechange = true,
+		dozonechange = false,
 		dopreparesound = false,
 		doexecutesound = false,
 		doexecutesoundpve = false,
@@ -1460,11 +1459,8 @@ function dgks:OnInitialize()
 	-- AceConfigDialog:AddToBlizOptions("dG KillShot File Setup", "Sound File Setup", "dG KillShot")
 	AceConfigDialog:AddToBlizOptions("dG KillShot Output", "Combat Text Output", "dG KillShot")
 
-	--Setup slash commands
-	--dgks:RegisterChatCommand("dgks", function() Settings.OpenToCategory(category.GetID()) end)
-	--dgks:RegisterChatCommand("ks", function() Settings.OpenToCategory(category.GetID()) end)
 	
-	
+	-- Cannot get ACECONSOLE working correctly in latest versions so I do it the old fashioned way	
 	SLASH_DGKS1 = "/dgks"
 	SLASH_DGKS2 = "/ks"
 	SlashCmdList.DGKS = function()
@@ -1693,31 +1689,43 @@ function dgks:OnCommReceived(cchan, message, distribution, sender)
 				-- Killshot Emotes
 				if (dgks.db.profile.dotxtemote and playerName == rxkiller) then
 					emotestring=string.gsub(string.gsub(dgks.db.profile.ksemote, "$v", rxvictim), "$s", streak)
-					SendChatMessage(emotestring, "EMOTE")
+					local emoteText = emotestring
+					-- Defer the chat send out of the CHAT_MSG_ADDON handler context to avoid tainting the player
+					C_Timer.After(0, function() SendChatMessage(emoteText, "EMOTE") end)
 				end
 				if (dgks.db.profile.doemote ~= "none" and playerName == rxkiller) then
 					-- fixme targeting doesn't seem to work with NPCs
-					DoEmote(dgks.db.profile.doemote, rxvictim)
+					local emote = dgks.db.profile.doemote
+					-- Defer the emote out of the CHAT_MSG_ADDON handler context to avoid tainting the player
+					C_Timer.After(0, function() DoEmote(emote, rxvictim) end)
 				end
 			else
 				killshottext = string.gsub(string.gsub(dgks.db.profile.dueltext, "$k", rxkiller), "$v", rxvictim)
 				--Duel Emotes
 				if (dgks.db.profile.dueltxtemote and playerName == rxkiller) then
 					emotestring=string.gsub(string.gsub(dgks.db.profile.duelcustomemote, "$v", rxvictim), "$s", streak)
-					SendChatMessage(emotestring, "EMOTE")
+					local emoteText = emotestring
+					-- Defer the chat send out of the CHAT_MSG_ADDON handler context to avoid tainting the player
+					C_Timer.After(0, function() SendChatMessage(emoteText, "EMOTE") end)
 				end
 				if (dgks.db.profile.duelemotewin ~= "none" and playerName == rxkiller) then
 					-- fixme targeting doesn't seem to work with NPCs
-					DoEmote(dgks.db.profile.duelemotewin, rxvictim)
+					local emote = dgks.db.profile.duelemotewin
+					-- Defer the emote out of the CHAT_MSG_ADDON handler context to avoid tainting the player
+					C_Timer.After(0, function() DoEmote(emote, rxvictim) end)
 				end
 			end
 			
 			-- Send to sink for local output
-			self:ScrollText(killshottext)
+			-- Defer sink output (a Channel sink would call SendChatMessage) out of the CHAT_MSG_ADDON handler context
+			local sinkText = killshottext
+			C_Timer.After(0, function() self:ScrollText(sinkText) end)
 			
 			-- Process multikill and play appropiate sound and text
 			if rxmultikill > 0 then
-				self:ScrollText(rxkiller .. " got a " .. self.db.profile.kstextM[rxmultikill] .. "!")
+				-- Defer sink output (a Channel sink would call SendChatMessage) out of the CHAT_MSG_ADDON handler context
+				local multikillText = rxkiller .. " got a " .. self.db.profile.kstextM[rxmultikill] .. "!"
+				C_Timer.After(0, function() self:ScrollText(multikillText) end)
 				self:dgks_SoundPack(self.db.profile.kssoundM[rxmultikill])
 			else
 				self:dgks_SoundPack(dgks:GetKillshotSound(rxstreak))
@@ -1975,6 +1983,7 @@ end
 -- Dev Debugging functions
 function dgks:Test()
 	-- Dev Debugging functions
+	--FIXME This is now a valid test on Wow 12 API
 	self:Print("DEBUG: " .. "Sending KillShot Event...")
 	-- Example combat log entries
 	-- Old 12/6 10:49:47.392  UNIT_DIED,0x0000000000000000,nil,0x80000000,0x80000000,0x0300000007362B6E,"Vvatsitchy-Caelestrasz",0x512,0x0
@@ -1986,6 +1995,18 @@ function dgks:Test()
 	self:CombatLogEventHandler(info,GetTime(),"PARTY_KILL",false,"Player-9-00064F35","Ratchet-Kil'jaeden",0x511,0x0,"Player-3676-09BED6E0","Test-Victim",0x10548,0x0)
 	self:CombatLogEventHandler(info,GetTime(),"SPELL_DAMAGE",false,"Player-9-00064F35","Ratchet-Kil'jaeden",0x511,0x0,"Player-3676-09BED6E0","Test-Victim",0x10548,0x0,585,"Smite",0x2,0000000000000000,0000000000000000,0,0,0,0,0,-1,0,0,0,0.00,0.00,628,0.0000,0,930,969,249,2,0,0,0,nil,nil,nil)
 	self:CombatLogEventHandler(info,GetTime(),"UNIT_DIED",false,0000000000000000,nil,0x80000000,0x80000000,"Player-3676-09BED6E0","Test-Victim",0x10548,0x0)
+end
+
+function dgks:TargetCheck(victimName)
+	if victimName == playerGUID then return false end 	--Victim is player lets dip out
+	--@debug@
+	dgks:Print("DEBUG:dgks:TargetCheck(" .. victimName .. ")")
+	--@end-debug@
+	if string.find(victimName, "Player", 1, true) ~= nil then -- Retail/Froever is dumb and always returns false on UnitIsPlayer, so we have to check the GUID string for "Player" to determine if it is a player or not
+   		return true
+	else
+    	return false
+	end
 end
 
 function dgks:TestPlayerDeath()
@@ -2000,43 +2021,49 @@ function dgks:TestPlayerDeath()
 end
 --@end-debug@
 
-if WOW_PROJECT_ID ~= 1 then -- 1 is Retail
+if WOW_PROJECT_ID ~= 1 then -- 1 is Retail IF not 1 skip to else section for Retail fix
 	-- This is causing issues in 12.0 since CLEU is no longer available
 	function events:COMBAT_LOG_EVENT_UNFILTERED(info, event, ...)
 		local timestamp, event, hideCaster, sourceGUID, sourceName, sourceFlags, sourceFlags2, destGUID, destName, destFlags, destFlags2 = CombatLogGetCurrentEventInfo()
 		dgks:CombatLogEventHandler(info, timestamp, event, hideCaster, sourceGUID, sourceName, sourceFlags, sourceFlags2, destGUID, destName, destFlags, destFlags2, ...)
 	end 
- else
+else
 	-- Retail fix
+	local inInstance, instanceType = IsInInstance()
+	-- If we are in an instance we will not use the PARTY_KILL event, since it is protected
 	function events:PARTY_KILL(attackerGUID, targetGUID)
-		--Only proceed if Victim was or we are in PvE mode
-		if  UnitIsPlayer(targetGUID) or dgks.db.profile.dopve then
-			local timestamp = GetTime()
-			--@debug@
-				dgks:Print("DEBUG: PARTY_KILL: attackerGUID: " .. attackerGUID .. " targetGUID: " .. targetGUID .. " Target_UnitIsPlayer: " .. tostring(UnitIsPlayer(targetGUID)))
-			--@end-debug@
-			local _, _, _, _, _, aName, playerServer = GetPlayerInfoByGUID(attackerGUID)
+		--@debug@
+				dgks:Print(
+				"DEBUG:EVENT:PARTY_KILL: attackerGUID: " .. tostring(attackerGUID) .. 
+				" targetGUID: " .. tostring(targetGUID) .. 
+				" UnitIsPlayer(): " .. tostring(UnitIsPlayer(targetGUID)) .. 
+				" dgksTargetCheck: " .. tostring(dgks:TargetCheck(targetGUID)))
+		--@end-debug@
+		-- If we are attacker and victim is a playr or pve is enabled, send the killshot
+		if attackerGUID == playerGUID and dgks:TargetCheck(targetGUID) or dgks.db.profile.dopve then
+			local timestamp = GetTime() --Set timestamp because retail does not provide it in the PARTY_KILL event
 			local _, _, _, _, _, vName, playerServer = GetPlayerInfoByGUID(targetGUID)
-			if attackerGUID == playerGUID then -- and UnitIsPlayer(targetGUID) then
-				if vName == nil then
-					--Could be an NPC
-					vName, playerServer = UnitNameFromGUID(targetGUID)		
-				end
-				if vName == nil then
-					--This dumb game...
-					vName = "NIL"
-				end
-				--@debug@
-					dgks:Print("DEBUG: " .. aName .. " has landed the kill.")
-					dgks:Print("DEBUG: " .. "Sending "..vName.." and "..timestamp.." to KillshotTX." )
-				--@end-debug@
-				-- The player has landed a killshot
-				dgks:Print("DEBUG: We killed Victum Name: " .. vName)
-				dgks:KillshotTX(vName, timestamp)
-			end --if attackerGUID
-		end --if UnitIsPlayer
+			if vName == nil then
+				--Could be an NPC
+				vName, playerServer = UnitNameFromGUID(targetGUID)		
+			end
+			if vName == nil then
+				--This dumb game...
+				vName = "NIL"
+			end
+			--@debug@
+			dgks:Print("DEBUG: " .. "Sending "..vName.." and "..timestamp.." to KillshotTX." )
+			--@end-debug@
+			dgks:KillshotTX(vName, timestamp)
+		end --if attackerGUID
 	end
-end 
+	function events:UNIT_DIED(targetGUID)
+			if targetGUID == playerGUID then
+			-- Player has died
+			self:PlayerDeath("Unknown because of retail")
+		end
+	end
+end
 
 function events:ZONE_CHANGED_NEW_AREA(info, event, ...)
 	
@@ -2090,23 +2117,28 @@ end
 		dgks:PlayerLoss(opponent,GetTime())
 	else
 		--@debug@
-		-- Dev Debugging functions
+		-- Dev Debugging functions - This will print all system messages to the chat window, which is useful for debugging
 		--dgks:Print("DEBUG: " .. msg)
 		--@end-debug@
 	end
-end 
+end
 
 function dgks:OnEnable()
 	--self:RegisterEvent("CHAT_MSG_ADDON", "AddonMessageHandler")
 	--OnEvent runs the function events:event
-	frame:SetScript("OnEvent", function(self, event, ...)
+	frame:HookScript("OnEvent", function(self, event, ...)
 		events[event](self,...);
 	end);
 	--Regeister all events with function events:event
 	for k, v in pairs(events) do
 		frame:RegisterEvent(k);
 	end
-	--self:SetSinkStorage(self.db.profile)
-	--Check if this is dgks_classic, if so print warning and set path correctly
+	
+	--Setup variables
+	playerGUID = UnitGUID("player")
+	playerClass, _, playerRace, playerSex, _, playerName, _ = GetPlayerInfoByGUID(playerGUID)
 
+	--@debug@
+	dgks:Print("DEBUG:OnEnable:playerName: " .. playerName .. " playerGUID: " .. playerGUID)
+	--@end-debug@
 end
