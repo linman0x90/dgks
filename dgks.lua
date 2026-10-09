@@ -33,6 +33,7 @@ local lastrxtimestamp = 0
 local lastkill = 0
 local timestamp = 0
 local lastToHurtMe = ""
+local lastLocalKillKey -- "victimGUID@timestamp" of the last kill we processed locally
 local newestconfigversion = 1
 local frame, events = CreateFrame("Frame"), {}; -- Event Frame
 local damageDealers = {}
@@ -42,6 +43,33 @@ local inArena = false
 local inBG = false
 local lastMessage, lastSender, lastTimestamp --Versionchecking duplicate detection
 local soundPath = "Interface\\AddOns\\dgks\\sounds\\"
+
+-- Client capability detection -------------------------------------------------
+-- Retail 12.x and WoW Forever (1.60, WOW_PROJECT_ID 18) give addons no combat log:
+-- COMBAT_LOG_EVENT_UNFILTERED cannot be registered (the client flags it as a forbidden
+-- action) and CombatLogGetCurrentEventInfo is nil. Kills and deaths arrive as the frame
+-- events PARTY_KILL(attackerGUID, targetGUID) and PLAYER_DEAD instead.
+-- Classic-era clients (Era, TBC/Wrath/Cata/MoP Classic) still have the combat log.
+-- Current Classic clients (Era 1.15.9, TBC 2.5.6, Mists 5.5.4) also expose C_CombatLog while their
+-- combat log still works, so the presence of that namespace must not decide. Use frame events when
+-- the combat-log function is gone (Forever, project ID 18) or on Mainline 12.0+, where registering
+-- COMBAT_LOG_EVENT_UNFILTERED is forbidden even though a deprecated wrapper may still exist.
+local clientToc = tonumber((select(4, GetBuildInfo()))) or 0
+local isMainline12 = (WOW_PROJECT_ID == (WOW_PROJECT_MAINLINE or 1)) and clientToc >= 120000
+local hasCombatLog = (type(CombatLogGetCurrentEventInfo) == "function") and not isMainline12
+local useFrameEvents = not hasCombatLog
+-- Addon messages to YELL are only a valid distribution on Classic clients.
+local canYellAddonMessages = hasCombatLog and WOW_PROJECT_ID ~= (WOW_PROJECT_MAINLINE or 1)
+
+-- Secret values (Midnight / Forever): comparing, indexing or doing arithmetic on one throws.
+local function isSecret(v)
+	return issecretvalue ~= nil and issecretvalue(v) == true
+end
+
+-- Escape a name so it can be embedded in a Lua pattern (names may carry "-Realm" or a surname).
+local function patternEscape(s)
+	return (tostring(s):gsub("[%-%.%+%[%]%(%)%$%^%%%?%*]", "%%%1"))
+end
 
 
 dgks = LibStub("AceAddon-3.0"):NewAddon("dgks", "AceEvent-3.0", "AceConsole-3.0", "LibSink-2.0","AceComm-3.0","AceSerializer-3.0")
@@ -1412,7 +1440,9 @@ local defaults = {
 		deathList = {},
 		kssoundH = "humiliation.ogg",
 		sink20Sticky = true,
-		sink20OutputSink = "Default",
+		-- Retail 12.x / WoW Forever: Blizzard's floating combat text throws on secret values when fed
+		-- from addon code, so default to the error frame there (users can still pick another output).
+		sink20OutputSink = useFrameEvents and "UIErrorsFrame" or "Default",
 		sink20ScrollArea = "Outgoing",
 	},
 }
@@ -1479,8 +1509,8 @@ function dgks:SoundEventHandler(info, sound)
 		if (tonumber(GetCVar("Sound_EnableAllSound") and GetCVar("Sound_EnableSFX")) == 1) then
 			--@debug@
 				-- Dev Debugging functions
-				self.Print("DEBUG: Sound: " .. sound )
-				self.Print("DEBUG: Soundchannel: " .. dgks.db.profile.soundchannel )
+				self:Print("DEBUG: Sound: " .. sound )
+				self:Print("DEBUG: Soundchannel: " .. dgks.db.profile.soundchannel )
 			--@end-debug@
 			PlaySoundFile(sound,dgks.db.profile.soundchannel)
 		end
@@ -1509,12 +1539,12 @@ function dgks:CombatLogEventHandler(info, timestamp, event, hideCaster, sourceGU
 							
 				--@debug@
 				-- Dev Debugging functions
-				self.Print("DEBUG: " .. UnitName("player") .. " has landed the kill.")
-				self.Print("DEBUG: " .. "Sending "..destName.." and "..timestamp.." to KillshotTX." )
+				self:Print("DEBUG: " .. UnitName("player") .. " has landed the kill.")
+				self:Print("DEBUG: " .. "Sending "..destName.." and "..timestamp.." to KillshotTX." )
 				--@end-debug@
 				
 				-- The player has landed a killshot
-				self:KillshotTX(destName, timestamp)
+				self:KillshotTX(destName, timestamp, destGUID)
 			end
 		end
 	end
@@ -1535,7 +1565,7 @@ function dgks:CombatLogEventHandler(info, timestamp, event, hideCaster, sourceGU
 				self:Print("DEBUG: " .. "Sending "..destName.." and "..timestamp.." to KillshotTX." )
 				--@end-debug@
 				-- The player has landed a killshot,this detection method is fooled by Feign Death so we do PARTY_KILL ALSO
-				self:KillshotTX(destName, timestamp)
+				self:KillshotTX(destName, timestamp, destGUID)
 			end
 		end
 	end
@@ -1583,7 +1613,14 @@ function dgks:CombatLogEventHandler(info, timestamp, event, hideCaster, sourceGU
 	end 
 end
 
-function dgks:KillshotTX(txvictim,txtimestamp)
+function dgks:KillshotTX(txvictim, txtimestamp, txvictimGUID)
+	-- One death is one kill. The combat-log path can report the same death twice (PARTY_KILL and the
+	-- pet-credited UNIT_DIED branch) with the same victim GUID and timestamp; drop the repeat.
+	if not isSecret(txvictimGUID) and txvictimGUID ~= nil then
+		local key = tostring(txvictimGUID) .. "@" .. tostring(txtimestamp)
+		if key == lastLocalKillKey then return end
+		lastLocalKillKey = key
+	end
 	-- Process the detect killshot
 	-- Increment killshot streak 
 	streak = streak + 1
@@ -1603,9 +1640,12 @@ function dgks:KillshotTX(txvictim,txtimestamp)
 	-- Reset deathstreak
 	deathstreak = 0
 	
-	-- Broadcast our Killshot
-	self:SendCM("dgks",dgks:Serialize(playerName,txvictim,txtimestamp,streak,multikill))
-	
+	-- Handle it locally first: sounds and text must never depend on chat delivery
+	-- (self-whispers and addon messages can be dropped or locked down in restricted content).
+	self:ProcessKillshot("dgks", playerName, txvictim, txtimestamp, streak, multikill, true)
+
+	-- Then broadcast our Killshot to other dgks users. Our own echo is dropped in OnCommReceived.
+	self:SendCM("dgks", dgks:Serialize(playerName, txvictim, txtimestamp, streak, multikill))
 end
 
 function dgks:DuelTX(txvictim,txtimestamp)
@@ -1616,8 +1656,10 @@ function dgks:DuelTX(txvictim,txtimestamp)
 	-- Reset deathstreak
 	deathstreak = 0
 	
-	-- Broadcast our duel win
-	self:SendCM("dgksDUEL",dgks:Serialize(playerName,txvictim,txtimestamp,streak,multikill))
+	-- Handle it locally first (see KillshotTX), then broadcast our duel win.
+	-- A duel is never a multikill; the file-level multikill counter belongs to the last killshot.
+	self:ProcessKillshot("dgksDUEL", playerName, txvictim, txtimestamp, streak, 0, true)
+	self:SendCM("dgksDUEL", dgks:Serialize(playerName, txvictim, txtimestamp, streak, 0))
 end
 
 function dgks:PlayerLoss(myKiller)
@@ -1641,7 +1683,10 @@ function dgks:PlayerLoss(myKiller)
 end
 
 function dgks:OnCommReceived(cchan, message, distribution, sender)
-	
+	-- In chat-messaging lockdown (12.x encounters / PvP matches) the payload, sender and channel can be
+	-- secret values. Check that before anything compares them.
+	if isSecret(message) or isSecret(sender) or isSecret(distribution) or isSecret(cchan) then return end
+
 	--If broadcast type is off return
 	if not dgks.db.profile.dobroadcasts and sender ~= playerName then return end
 	-- If Guild broadcast is off and we received a guild broadcast just return
@@ -1652,7 +1697,7 @@ function dgks:OnCommReceived(cchan, message, distribution, sender)
 	if not dgks.db.profile.doraid and distribution == "INSTANCE_CHAT" then return end
 
 	local timestamp = time()
-	
+
 	--Process non-serialized cchan
 	--@debug@
 	self:Print("OnCommReceived: CChan= " .. cchan .. " " .. message .. distribution .. sender)
@@ -1670,96 +1715,127 @@ function dgks:OnCommReceived(cchan, message, distribution, sender)
 		self:Print(sender .. " is on version " .. message)
 		--@end-debug@
 
-		--This should always be a direct whisper
-		self:SendCommMessage("dgksVR",version,WHISPER,sender)
+		--This should always be a direct whisper. "WHISPER" is the chat type; the WHISPER global is a localized word.
+		self:SendCommMessage("dgksVR", version, "WHISPER", sender)
 
-	elseif cchan == "dgks" or "dgksDUEL" then
-		--Verify we have a valid event	
-		local ok,rxkiller,rxvictim,rxtimestamp,rxstreak,rxmultikill = dgks:Deserialize(message)
-		if not ok then return else
-		
-			-- Check for duplicates here
-			if rxkiller == lastrxkiller and rxvictim == lastrxvictim and rxtimestamp == lastrxtimestamp then return	end
-			-- Set duplicate prevention variables
-			lastrxkiller, lastrxvictim, lastrxtimestamp = rxkiller, rxvictim, rxtimestamp
-		
-			-- Generate Text
-			if cchan == "dgks" then 
-				killshottext = string.gsub(string.gsub(dgks.db.profile.kstext, "$k", rxkiller), "$v", rxvictim)
-				-- Killshot Emotes
-				if (dgks.db.profile.dotxtemote and playerName == rxkiller) then
-					emotestring=string.gsub(string.gsub(dgks.db.profile.ksemote, "$v", rxvictim), "$s", streak)
-					local emoteText = emotestring
-					-- Defer the chat send out of the CHAT_MSG_ADDON handler context to avoid tainting the player
-					C_Timer.After(0, function() SendChatMessage(emoteText, "EMOTE") end)
-				end
-				if (dgks.db.profile.doemote ~= "none" and playerName == rxkiller) then
-					-- fixme targeting doesn't seem to work with NPCs
-					local emote = dgks.db.profile.doemote
-					-- Defer the emote out of the CHAT_MSG_ADDON handler context to avoid tainting the player
-					C_Timer.After(0, function() DoEmote(emote, rxvictim) end)
-				end
-			else
-				killshottext = string.gsub(string.gsub(dgks.db.profile.dueltext, "$k", rxkiller), "$v", rxvictim)
-				--Duel Emotes
-				if (dgks.db.profile.dueltxtemote and playerName == rxkiller) then
-					emotestring=string.gsub(string.gsub(dgks.db.profile.duelcustomemote, "$v", rxvictim), "$s", streak)
-					local emoteText = emotestring
-					-- Defer the chat send out of the CHAT_MSG_ADDON handler context to avoid tainting the player
-					C_Timer.After(0, function() SendChatMessage(emoteText, "EMOTE") end)
-				end
-				if (dgks.db.profile.duelemotewin ~= "none" and playerName == rxkiller) then
-					-- fixme targeting doesn't seem to work with NPCs
-					local emote = dgks.db.profile.duelemotewin
-					-- Defer the emote out of the CHAT_MSG_ADDON handler context to avoid tainting the player
-					C_Timer.After(0, function() DoEmote(emote, rxvictim) end)
-				end
-			end
-			
-			-- Send to sink for local output
-			-- Defer sink output (a Channel sink would call SendChatMessage) out of the CHAT_MSG_ADDON handler context
-			local sinkText = killshottext
-			C_Timer.After(0, function() self:ScrollText(sinkText) end)
-			
-			-- Process multikill and play appropiate sound and text
-			if rxmultikill > 0 then
-				-- Defer sink output (a Channel sink would call SendChatMessage) out of the CHAT_MSG_ADDON handler context
-				local multikillText = rxkiller .. " got a " .. self.db.profile.kstextM[rxmultikill] .. "!"
-				C_Timer.After(0, function() self:ScrollText(multikillText) end)
-				self:dgks_SoundPack(self.db.profile.kssoundM[rxmultikill])
-			else
-				self:dgks_SoundPack(dgks:GetKillshotSound(rxstreak))
-			end
-
-			-- We have landed a kill
-			if playerName == rxkiller then
-				local setMaxStreak = false
-				
-				-- Increment maxstreak if this is a record high
-				if ( streak > dgks.db.profile.maxstreak ) then 
-					dgks.db.profile.maxstreak = streak
-					setMaxStreak = true
-				end
-						
-				-- This now triggers a global cool and most likely cannot work anymore
-				-- if dgks.db.profile.dopet then C_PetJournal.SummonRandomPet(allPets) end
-				
-				if dgks.db.profile.doscreenshotonkill then Screenshot()
-				elseif dgks.db.profile.doscreenshotonstreak and setMaxStreak then Screenshot()
-				elseif dgks.db.profile.doscreenshotonmultikill and rxmultikill > 0 then Screenshot() end
-				
-				-- Store in killList
-				if not dgks.db.profile.killList[rxvictim] then dgks.db.profile.killList[rxvictim] = {} end
-				tinsert(dgks.db.profile.killList[rxvictim], date("%m/%d/%y %H:%M:%S"))
-				--fixme this count my be inaccurate due to the way lua handles tables without numeric index
-				if (dgks.db.profile.dochatbox) then dgks:Print("You have killed "..rxvictim.." "..#dgks.db.profile.killList[rxvictim].." times.") end
-			end
+	elseif cchan == "dgks" or cchan == "dgksDUEL" then
+		--Verify we have a valid event
+		-- Our own kills are handled locally in KillshotTX/DuelTX, so a message from ourselves is the echo
+		-- of our own broadcast (GUILD/PARTY/RAID/INSTANCE_CHAT deliver it to us too). Identify the echo by
+		-- the authoritative sender, not by the killer name in the payload: a namesake on a connected
+		-- realm must still be heard.
+		if dgks:IsOwnSender(sender) then return end
+		local ok, rxkiller, rxvictim, rxtimestamp, rxstreak, rxmultikill = dgks:Deserialize(message)
+		if ok then
+			dgks:ProcessKillshot(cchan, rxkiller, rxvictim, rxtimestamp, rxstreak, rxmultikill, false)
 		end
 	end
 
-	--Set duplicate prevention variables
+	-- Remember the last message for version-check duplicate detection
 	lastMessage, lastSender, lastTimestamp = message, sender, timestamp
+end
 
+-- Is this CHAT_MSG_ADDON sender our own character? Senders arrive as "Name-Realm" on Classic and
+-- Retail and as the regional unique name on WoW Forever; Ambiguate() strips our own realm suffix.
+function dgks:IsOwnSender(sender)
+	if isSecret(sender) or type(sender) ~= "string" or playerName == nil then return false end
+	if sender == playerName then return true end
+	if type(Ambiguate) == "function" then
+		local ok, short = pcall(Ambiguate, sender, "none")
+		if ok and not isSecret(short) and short == playerName then return true end
+	end
+	return false
+end
+
+-- Handle one killshot ("dgks") or duel result ("dgksDUEL"): play the sound, show the text,
+-- do emotes/screenshots and update the stats. Called directly for our own kills and from
+-- OnCommReceived for kills broadcast by other dgks users.
+function dgks:ProcessKillshot(cchan, rxkiller, rxvictim, rxtimestamp, rxstreak, rxmultikill, isLocal)
+	-- Validate the payload: it may come from another player's client
+	if type(rxkiller) ~= "string" or type(rxvictim) ~= "string" or type(rxstreak) ~= "number" or type(rxmultikill) ~= "number" then return end
+
+	-- Duplicate suppression for inbound messages only: several distributions (GUILD and PARTY, say) can
+	-- deliver the same kill from the same player back to back. Our own kills are never deduplicated:
+	-- two same-frame kills on identically named targets are both real.
+	if not isLocal then
+		if rxkiller == lastrxkiller and rxvictim == lastrxvictim and rxtimestamp == lastrxtimestamp then return end
+		lastrxkiller, lastrxvictim, lastrxtimestamp = rxkiller, rxvictim, rxtimestamp
+	end
+
+	-- Clamp the multikill index to the configured text/sound tables
+	if rxmultikill > #self.db.profile.kstextM then rxmultikill = #self.db.profile.kstextM end
+	if rxmultikill < 0 then rxmultikill = 0 end
+
+	-- Generate Text
+	local killshottext
+	if cchan == "dgks" then
+		killshottext = string.gsub(string.gsub(dgks.db.profile.kstext, "$k", rxkiller), "$v", rxvictim)
+		-- Killshot Emotes
+		if (dgks.db.profile.dotxtemote and isLocal) then
+			local emoteText = string.gsub(string.gsub(dgks.db.profile.ksemote, "$v", rxvictim), "$s", streak)
+			-- Defer the chat send out of the event handler context to avoid tainting the player
+			C_Timer.After(0, function() SendChatMessage(emoteText, "EMOTE") end)
+		end
+		if (dgks.db.profile.doemote ~= "none" and isLocal) then
+			-- fixme targeting doesn't seem to work with NPCs
+			local emote = dgks.db.profile.doemote
+			-- Defer the emote out of the event handler context to avoid tainting the player
+			C_Timer.After(0, function() DoEmote(emote, rxvictim) end)
+		end
+	else
+		killshottext = string.gsub(string.gsub(dgks.db.profile.dueltext, "$k", rxkiller), "$v", rxvictim)
+		--Duel Emotes
+		if (dgks.db.profile.dueltxtemote and isLocal) then
+			local emoteText = string.gsub(string.gsub(dgks.db.profile.duelcustomemote, "$v", rxvictim), "$s", streak)
+			-- Defer the chat send out of the event handler context to avoid tainting the player
+			C_Timer.After(0, function() SendChatMessage(emoteText, "EMOTE") end)
+		end
+		if (dgks.db.profile.duelemotewin ~= "none" and isLocal) then
+			-- fixme targeting doesn't seem to work with NPCs
+			local emote = dgks.db.profile.duelemotewin
+			-- Defer the emote out of the event handler context to avoid tainting the player
+			C_Timer.After(0, function() DoEmote(emote, rxvictim) end)
+		end
+	end
+
+	-- Send to sink for local output
+	-- Defer sink output (a Channel sink would call SendChatMessage) out of the event handler context
+	local sinkText = killshottext
+	C_Timer.After(0, function() self:ScrollText(sinkText) end)
+
+	-- Process multikill and play appropiate sound and text
+	if rxmultikill > 0 then
+		-- Defer sink output (a Channel sink would call SendChatMessage) out of the event handler context
+		local multikillText = rxkiller .. " got a " .. self.db.profile.kstextM[rxmultikill] .. "!"
+		C_Timer.After(0, function() self:ScrollText(multikillText) end)
+		self:dgks_SoundPack(self.db.profile.kssoundM[rxmultikill])
+	else
+		self:dgks_SoundPack(dgks:GetKillshotSound(rxstreak))
+	end
+
+	-- We have landed a kill (never credit a remote kill, even from a namesake)
+	if isLocal then
+		local setMaxStreak = false
+
+		-- Increment maxstreak if this is a record high
+		if ( streak > dgks.db.profile.maxstreak ) then
+			dgks.db.profile.maxstreak = streak
+			setMaxStreak = true
+		end
+
+		-- This now triggers a global cool and most likely cannot work anymore
+		-- if dgks.db.profile.dopet then C_PetJournal.SummonRandomPet(allPets) end
+
+		if dgks.db.profile.doscreenshotonkill then Screenshot()
+		elseif dgks.db.profile.doscreenshotonstreak and setMaxStreak then Screenshot()
+		elseif dgks.db.profile.doscreenshotonmultikill and rxmultikill > 0 then Screenshot() end
+
+		-- Store in killList
+		if not dgks.db.profile.killList[rxvictim] then dgks.db.profile.killList[rxvictim] = {} end
+		tinsert(dgks.db.profile.killList[rxvictim], date("%m/%d/%y %H:%M:%S"))
+		--fixme this count my be inaccurate due to the way lua handles tables without numeric index
+		if (dgks.db.profile.dochatbox) then dgks:Print("You have killed "..rxvictim.." "..#dgks.db.profile.killList[rxvictim].." times.") end
+	end
 end
 
 function dgks:PlayerDeath(myKiller)
@@ -1782,7 +1858,7 @@ end
 function dgks:GetKillshotSound(streak)
 	if (dgks.db.profile.style == "dota") then
 		-- DoTA Style
-		for x = 7, 0, -1 do
+		for x = 7, 1, -1 do
 			if (dgks.db.profile.ksrank[x] > 0) and (streak >= dgks.db.profile.ksrank[x]) then return dgks.db.profile.kssound[x]; end
 		end
 	else
@@ -1813,7 +1889,18 @@ function dgks:ScrollText(msg)
 		--	dgks:Print("Setting Combat Scrolling Text for Self to enabled. Please /reload your UI or restart client.")
 		--	SetCVar("enableFloatingCombatText", 1)
 		--end
-		dgks:Pour(msg, 1.0, 0.1, 0.1)
+		-- Blizzard_CombatText can hold secret values in combat on 12.x clients and then throws inside
+		-- CombatText_AddMessage when called from addon code. Never let that error reach the player.
+		local ok = pcall(dgks.Pour, dgks, msg, 1.0, 0.1, 0.1)
+		if not ok then
+			if UIErrorsFrame and UIErrorsFrame.AddMessage then
+				UIErrorsFrame:AddMessage(msg, 1.0, 0.1, 0.1, 1.0)
+			end
+			if not dgks.pourFallbackNoticed then
+				dgks.pourFallbackNoticed = true
+				dgks:Print("This client does not let addons write to Blizzard's floating combat text. Showing killshot text in the error frame instead; pick another output under /dgks > Combat Text Output.")
+			end
+		end
 		
 	end
 end
@@ -1860,20 +1947,12 @@ end
 
 function dgks:SendCM(cchan,msg)
 	-- Example usage: self:SendCM("dgksDUEL",dgks:Serialize(playerName,txvictim,txtimestamp,streak,multikill)
-
-	-- Whisper to ourselves if broadcasts are off or guild is off or we are not in a guild
-	if not dgks.db.profile.dobroadcasts or not dgks.db.profile.doguild or not IsInGuild() then
-		--@debug@
-		self:Print("Sending: CChan= " .. cchan .. " " .. msg .. " to WHISPER " .. playerName)
-		--@end-debug@
-		self:SendCommMessage(cchan,msg,"WHISPER",playerName)
-	end
+	-- Our own kills are already handled locally (ProcessKillshot), so no self-whisper is needed here.
 
 	if dgks.db.profile.dobroadcasts then
 
-		-- If not Retail, send to yell
-		-- https://wowpedia.fandom.com/wiki/WOW_PROJECT_ID
-		if WOW_PROJECT_ID ~= 1 then
+		-- Classic clients only: addon messages to YELL reach nearby dgks users
+		if canYellAddonMessages then
 			self:SendCommMessage(cchan,msg,"YELL")
 			--@debug@
 			self:Print("Sending: CChan= " .. cchan .. " " .. msg .. " to YELL")
@@ -1933,7 +2012,7 @@ function dgks:SendCM(cchan,msg)
 		if dgks.db.profile.dofriends then
 			for i = 1, C_FriendList.GetNumFriends() do
 				local info = C_FriendList.GetFriendInfoByIndex(i)
-				if info and info.connected then
+				if info and not isSecret(info.connected) and not isSecret(info.name) and info.connected then
 					self:SendCommMessage(cchan,msg,"WHISPER",info.name)
 					--@debug@
 					self:Print("Sending: CChan= " .. cchan .. " " .. msg .. " to WHISPER " .. " Name: " .. info.name)
@@ -1958,7 +2037,8 @@ function dgks:SendCM(cchan,msg)
 			for i = 1, onlineBFriends  do
 				for j = 1, C_BattleNet.GetFriendNumGameAccounts(i) do
 					local game = C_BattleNet.GetFriendGameAccountInfo(i, j)
-					if game.characterName == nil or game.realmName == nil or game.factionName == nil then
+					if isSecret(game.characterName) or isSecret(game.realmName) or isSecret(game.factionName)
+						or game.characterName == nil or game.realmName == nil or game.factionName == nil then
 						break
 					end
 							--@debug@
@@ -1979,11 +2059,38 @@ function dgks:SendCM(cchan,msg)
 	end
 end
 
+-- Is this GUID another player (as opposed to an NPC, a pet or ourselves)?
+function dgks:TargetCheck(victimGUID)
+	if isSecret(victimGUID) or victimGUID == nil then return false end
+	if victimGUID == playerGUID then return false end	--Victim is player lets dip out
+	if C_PlayerInfo and C_PlayerInfo.GUIDIsPlayer then
+		local ok, isPlayer = pcall(C_PlayerInfo.GUIDIsPlayer, victimGUID)
+		if ok and not isSecret(isPlayer) then return isPlayer == true end
+	end
+	-- Fallback: player GUIDs look like "Player-<server>-<id>"
+	return type(victimGUID) == "string" and string.find(victimGUID, "Player-", 1, true) == 1
+end
+
+-- Best-effort display name for a GUID delivered by PARTY_KILL (players first, then NPCs).
+function dgks:VictimNameFromGUID(guid)
+	if isSecret(guid) or guid == nil then return "Unknown" end
+	local name
+	if dgks:TargetCheck(guid) then
+		local ok, _, _, _, _, _, n = pcall(GetPlayerInfoByGUID, guid)
+		if ok and not isSecret(n) then name = n end
+	end
+	if name == nil and type(UnitNameFromGUID) == "function" then
+		local ok, n = pcall(UnitNameFromGUID, guid)
+		if ok and not isSecret(n) then name = n end
+	end
+	if name == nil or name == "" then name = "Unknown" end
+	return name
+end
+
 --@debug@
 -- Dev Debugging functions
 function dgks:Test()
-	-- Dev Debugging functions
-	--FIXME This is now a valid test on Wow 12 API
+	-- Drives the combat-log style handler directly, so it works on every client: /run dgks:Test()
 	self:Print("DEBUG: " .. "Sending KillShot Event...")
 	-- Example combat log entries
 	-- Old 12/6 10:49:47.392  UNIT_DIED,0x0000000000000000,nil,0x80000000,0x80000000,0x0300000007362B6E,"Vvatsitchy-Caelestrasz",0x512,0x0
@@ -1991,22 +2098,24 @@ function dgks:Test()
 	-- 9/12 20:28:09.501  PARTY_KILL,Player-9-00064F35,"Ratchet-Kil'jaeden",0x511,0x0,Player-9-0A43E636,"Liinx-Kil'jaeden",0x10548,0x0
 	-- 7/21 01:23:16.879  PARTY_KILL,Player-9-00064F35,"Ratchet-Kil'jaeden",0x511,0x0,Player-3676-09BED6E0,"Kruulmokthan-Area52",0x10548,0x0
 	-- 7/21 01:23:16.879  SPELL_DAMAGE,Player-9-00064F35,"Ratchet-Kil'jaeden",0x511,0x0,Player-3676-09BED6E0,"Kruulmokthan-Area52",0x10548,0x0,585,"Smite",0x2,0000000000000000,0000000000000000,0,0,0,0,0,-1,0,0,0,0.00,0.00,628,0.0000,0,930,969,249,2,0,0,0,nil,nil,nil
-    -- 7/21 01:23:16.879  UNIT_DIED,0000000000000000,nil,0x80000000,0x80000000,Player-3676-09BED6E0,"Kruulmokthan-Area52",0x10548,0x0
+	-- 7/21 01:23:16.879  UNIT_DIED,0000000000000000,nil,0x80000000,0x80000000,Player-3676-09BED6E0,"Kruulmokthan-Area52",0x10548,0x0
 	self:CombatLogEventHandler(info,GetTime(),"PARTY_KILL",false,"Player-9-00064F35","Ratchet-Kil'jaeden",0x511,0x0,"Player-3676-09BED6E0","Test-Victim",0x10548,0x0)
 	self:CombatLogEventHandler(info,GetTime(),"SPELL_DAMAGE",false,"Player-9-00064F35","Ratchet-Kil'jaeden",0x511,0x0,"Player-3676-09BED6E0","Test-Victim",0x10548,0x0,585,"Smite",0x2,0000000000000000,0000000000000000,0,0,0,0,0,-1,0,0,0,0.00,0.00,628,0.0000,0,930,969,249,2,0,0,0,nil,nil,nil)
 	self:CombatLogEventHandler(info,GetTime(),"UNIT_DIED",false,0000000000000000,nil,0x80000000,0x80000000,"Player-3676-09BED6E0","Test-Victim",0x10548,0x0)
 end
 
-function dgks:TargetCheck(victimName)
-	if victimName == playerGUID then return false end 	--Victim is player lets dip out
-	--@debug@
-	dgks:Print("DEBUG:dgks:TargetCheck(" .. victimName .. ")")
-	--@end-debug@
-	if string.find(victimName, "Player", 1, true) ~= nil then -- Retail/Froever is dumb and always returns false on UnitIsPlayer, so we have to check the GUID string for "Player" to determine if it is a player or not
-   		return true
-	else
-    	return false
+-- Simulate the frame-event path used on Retail 12.x / WoW Forever: /run dgks:TestFrameKill()
+function dgks:TestFrameKill()
+	if not events.PARTY_KILL then
+		self:Print("DEBUG: frame-event path is not active on this client (combat log available); use dgks:Test() instead.")
+		return
 	end
+	self:Print("DEBUG: Simulating PARTY_KILL frame event...")
+	local savedPve = dgks.db.profile.dopve
+	dgks.db.profile.dopve = true -- the fake victim GUID is not a real player
+	local ok, err = pcall(events.PARTY_KILL, frame, playerGUID, "Player-0-TESTVICTIM")
+	dgks.db.profile.dopve = savedPve
+	if not ok then error(err, 0) end
 end
 
 function dgks:TestPlayerDeath()
@@ -2021,60 +2130,58 @@ function dgks:TestPlayerDeath()
 end
 --@end-debug@
 
-if WOW_PROJECT_ID ~= 1 then -- 1 is Retail IF not 1 skip to else section for Retail fix
-	-- This is causing issues in 12.0 since CLEU is no longer available
+if not useFrameEvents then
+	-- Classic clients: the combat log tells us who killed whom (and lets pets be credited).
 	function events:COMBAT_LOG_EVENT_UNFILTERED(info, event, ...)
 		local timestamp, event, hideCaster, sourceGUID, sourceName, sourceFlags, sourceFlags2, destGUID, destName, destFlags, destFlags2 = CombatLogGetCurrentEventInfo()
 		dgks:CombatLogEventHandler(info, timestamp, event, hideCaster, sourceGUID, sourceName, sourceFlags, sourceFlags2, destGUID, destName, destFlags, destFlags2, ...)
-	end 
-else
-	-- Retail fix
-	local inInstance, instanceType = IsInInstance()
-	-- If we are in an instance we will not use the PARTY_KILL event, since it is protected
-	function events:PARTY_KILL(attackerGUID, targetGUID)
-		--@debug@
-				dgks:Print(
-				"DEBUG:EVENT:PARTY_KILL: attackerGUID: " .. tostring(attackerGUID) .. 
-				" targetGUID: " .. tostring(targetGUID) .. 
-				" UnitIsPlayer(): " .. tostring(UnitIsPlayer(targetGUID)) .. 
-				" dgksTargetCheck: " .. tostring(dgks:TargetCheck(targetGUID)))
-		--@end-debug@
-		-- If we are attacker and victim is a playr or pve is enabled, send the killshot
-		if attackerGUID == playerGUID and dgks:TargetCheck(targetGUID) or dgks.db.profile.dopve then
-			local timestamp = GetTime() --Set timestamp because retail does not provide it in the PARTY_KILL event
-			local _, _, _, _, _, vName, playerServer = GetPlayerInfoByGUID(targetGUID)
-			if vName == nil then
-				--Could be an NPC
-				vName, playerServer = UnitNameFromGUID(targetGUID)		
-			end
-			if vName == nil then
-				--This dumb game...
-				vName = "NIL"
-			end
-			--@debug@
-			dgks:Print("DEBUG: " .. "Sending "..vName.." and "..timestamp.." to KillshotTX." )
-			--@end-debug@
-			dgks:KillshotTX(vName, timestamp)
-		end --if attackerGUID
 	end
-	function events:UNIT_DIED(targetGUID)
-			if targetGUID == playerGUID then
-			-- Player has died
-			self:PlayerDeath("Unknown because of retail")
+else
+	-- Retail 12.x / WoW Forever: no combat log. PARTY_KILL fires for kills by our group (including
+	-- our pet); PLAYER_DEAD fires when we die. Who killed us is unknown on this path.
+	-- NOTE: handlers are dispatched as events[event](frame, ...), so 'self' is the event frame, not dgks.
+	function events:PARTY_KILL(attackerGUID, targetGUID)
+		-- In restricted content (instances, PvP matches) these GUIDs can be secret values and must not be compared.
+		if isSecret(attackerGUID) or isSecret(targetGUID) then return end
+		--@debug@
+		dgks:Print("DEBUG:EVENT:PARTY_KILL attacker=" .. tostring(attackerGUID) .. " target=" .. tostring(targetGUID))
+		--@end-debug@
+		if targetGUID == nil or targetGUID == playerGUID then return end
+		-- Only our own kills (or our pet's) count
+		local mine = (attackerGUID == playerGUID)
+		if not mine and attackerGUID ~= nil then
+			local petGUID = UnitGUID("pet")
+			mine = (not isSecret(petGUID) and petGUID ~= nil and attackerGUID == petGUID)
 		end
+		if not mine then return end
+		-- The victim must be a player unless PvE killshots are enabled
+		if not (dgks:TargetCheck(targetGUID) or dgks.db.profile.dopve) then return end
+		-- The frame event carries no timestamp
+		dgks:KillshotTX(dgks:VictimNameFromGUID(targetGUID), GetTime(), targetGUID)
+	end
+
+	function events:PLAYER_DEAD()
+		-- Without the combat log we cannot tell who landed the killing blow.
+		dgks:PlayerDeath(nil)
 	end
 end
 
-function events:ZONE_CHANGED_NEW_AREA(info, event, ...)
-	
+-- Track whether we are inside an arena or battleground; this decides which chat distribution carries broadcasts.
+-- IsInInstance() exists on every client. (The old check "IsActiveBattlefieldArena() ~= nil" was always true,
+-- because that API returns false, not nil, outside arenas.)
+local function updatePvPInstanceState()
+	local _, instanceType = IsInInstance()
+	if isSecret(instanceType) then instanceType = nil end
+	inArena = (instanceType == "arena")
+	inBG = (instanceType == "pvp")
+end
+
+function events:ZONE_CHANGED_NEW_AREA()
 	if (dgks.db.profile.dozonechange) then
 		streak = 0
 		deathstreak = 0
 	end
-
-	-- Check for Arena and Battleground
-	if IsActiveBattlefieldArena() ~=nil then inArena = true else inArena = false end
-	if UnitInBattleground("Player") ~= nil then inBG = true else inBG = false end
+	updatePvPInstanceState()
 
 	--if (dgks.db.profile.dopreparesound) then
 		--local junk
@@ -2085,60 +2192,90 @@ function events:ZONE_CHANGED_NEW_AREA(info, event, ...)
 	--end
 end
 
+function events:PLAYER_ENTERING_WORLD()
+	-- Login or /reload inside a battleground or arena: ZONE_CHANGED_NEW_AREA may not fire
+	updatePvPInstanceState()
+end
+
 function events:CHAT_MSG_BG_SYSTEM_NEUTRAL(msg, ...)
+	if isSecret(msg) or type(msg) ~= "string" then return end
 	-- Prepare for Battleground
 	if (dgks.db.profile.dopreparesound) then
 		if msg == "The battle begins in 30 seconds!" then dgks:dgks_SoundPack(dgks.db.profile.kssoundP) end
 	end
 end 
 
- function events:CHAT_MSG_SYSTEM(msg, ...)
+-- Build the duel system-message patterns for our own name. The opponent is captured with a
+-- plain lazy group; the old "(.-%--.-)" capture assumed single-word names.
+local function duelPatterns()
+	local me = patternEscape(playerName or UnitName("player") or "")
+	local any = "(.-)"
+	return {
+		iFled    = "^" .. format(DUEL_WINNER_RETREAT, any, me) .. "$",	-- we fled, opponent wins
+		theyFled = "^" .. format(DUEL_WINNER_RETREAT, me, any) .. "$",	-- opponent fled, we win
+		iWon     = "^" .. format(DUEL_WINNER_KNOCKOUT, me, any) .. "$",
+		iLost    = "^" .. format(DUEL_WINNER_KNOCKOUT, any, me) .. "$",
+	}
+end
+
+function events:CHAT_MSG_SYSTEM(msg, ...)
+	if isSecret(msg) or type(msg) ~= "string" then return end
 	-- Prepare for Duel
 	if (dgks.db.profile.dopreparesound) then
 		if msg == format(DUEL_COUNTDOWN,3) then dgks:dgks_SoundPack(dgks.db.profile.kssoundP) end
 	end
+	local p = duelPatterns()
+	local opponent
 	-- Player fled from Duel
-	if strmatch(msg, format(DUEL_WINNER_RETREAT, "(.-%--.-)", playerName)) then
+	opponent = strmatch(msg, p.iFled)
+	if opponent then
 		if dgks.db.profile.duelhumiliation then dgks:dgks_SoundPack(dgks.db.profile.kssoundH) end
-		opponent = strmatch(msg, format(DUEL_WINNER_RETREAT, "(.-%--.-)", playerName))
-		self:PlayerLoss(opponent)
-	--fixme should probably create new msgs for duels in the future
-	-- Opponent fled from Duel
-	elseif strmatch(msg, format(DUEL_WINNER_RETREAT, playerName, "(.-%--.-)")) then
-		opponent = strmatch(msg, format(DUEL_WINNER_RETREAT, playerName, "(.-%--.-)"))
-		dgks:DuelTX(opponent,GetTime())
-	-- Won Duel
-	elseif strmatch(msg, format(DUEL_WINNER_KNOCKOUT, playerName, "(.-%--.-)")) then
-		opponent = strmatch(msg, format(DUEL_WINNER_KNOCKOUT, playerName, "(.-%--.-)"))
-		dgks:DuelTX(opponent,GetTime())
-	-- Lost Duel
-	elseif strmatch(msg, format(DUEL_WINNER_KNOCKOUT, "(.-%--.-)", playerName)) then
-		opponent = strmatch(msg, format(DUEL_WINNER_KNOCKOUT, "(.-%--.-)", playerName))
-		dgks:PlayerLoss(opponent,GetTime())
-	else
-		--@debug@
-		-- Dev Debugging functions - This will print all system messages to the chat window, which is useful for debugging
-		--dgks:Print("DEBUG: " .. msg)
-		--@end-debug@
+		dgks:PlayerLoss(opponent)
+		return
 	end
+	-- Opponent fled from Duel
+	opponent = strmatch(msg, p.theyFled)
+	if opponent then dgks:DuelTX(opponent, GetTime()) return end
+	-- Won Duel
+	opponent = strmatch(msg, p.iWon)
+	if opponent then dgks:DuelTX(opponent, GetTime()) return end
+	-- Lost Duel
+	opponent = strmatch(msg, p.iLost)
+	if opponent then dgks:PlayerLoss(opponent) return end
+	--@debug@
+	-- Dev Debugging functions - This will print all system messages to the chat window, which is useful for debugging
+	--dgks:Print("DEBUG: " .. msg)
+	--@end-debug@
 end
 
 function dgks:OnEnable()
-	--self:RegisterEvent("CHAT_MSG_ADDON", "AddonMessageHandler")
-	--OnEvent runs the function events:event
+	--OnEvent runs the function events:event (dispatched with the frame as 'self')
 	frame:HookScript("OnEvent", function(self, event, ...)
-		events[event](self,...);
-	end);
-	--Regeister all events with function events:event
+		local handler = events[event]
+		if handler then handler(self, ...) end
+	end)
+	--Register all events with function events:event
 	for k, v in pairs(events) do
-		frame:RegisterEvent(k);
+		frame:RegisterEvent(k)
 	end
-	
+
 	--Setup variables
 	playerGUID = UnitGUID("player")
-	playerClass, _, playerRace, playerSex, _, playerName, _ = GetPlayerInfoByGUID(playerGUID)
+	local localizedClass, _, localizedRace, _, _, name = GetPlayerInfoByGUID(playerGUID)
+	playerClass, playerRace, playerName = localizedClass, localizedRace, name
+	if playerName == nil or playerName == "" then
+		-- Fallback: first name plus surname on clients with regional unique names (WoW Forever)
+		local first, second
+		if UnitNameUnmodified then first, second = UnitNameUnmodified("player") else first = UnitName("player") end
+		if RegionalUniqueNamesEnabled and RegionalUniqueNamesEnabled() and second then
+			playerName = first .. " " .. second
+		else
+			playerName = first
+		end
+	end
+	updatePvPInstanceState()
 
 	--@debug@
-	dgks:Print("DEBUG:OnEnable:playerName: " .. playerName .. " playerGUID: " .. playerGUID)
+	dgks:Print("DEBUG:OnEnable:playerName: " .. tostring(playerName) .. " playerGUID: " .. tostring(playerGUID))
 	--@end-debug@
 end
