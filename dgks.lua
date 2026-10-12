@@ -33,6 +33,11 @@ if C_AddOns.GetAddOnMetadata("MyAddOn", "X-Family") == "Classic" then
 	classic = true
 end
 
+--Check for secret values in mainline versions
+local function isSecret(v)
+	return issecretvalue ~= nil and issecretvalue(v) == true
+end
+
 function sortListByLength(t,a,b)
 	local acount, bcount = 0,0
 	for _ in pairs(t[a]) do acount = acount + 1 end
@@ -2048,9 +2053,11 @@ if classic then
 		end --if attackerGUID
 	end
 	function events:UNIT_DIED(targetGUID)
+		if not isSecret(targetGUID) then
 			if targetGUID == playerGUID then
 			-- Player has died
 			self:PlayerDeath("Unknown because of retail")
+			end
 		end
 	end
 end
