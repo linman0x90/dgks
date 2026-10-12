@@ -2022,12 +2022,13 @@ if classic then
 		dgks:CombatLogEventHandler(info, timestamp, event, hideCaster, sourceGUID, sourceName, sourceFlags, sourceFlags2, destGUID, destName, destFlags, destFlags2, ...)
 	end 
 	else
-	-- Retail fix
 	-- This section handles Retail and Forever
 	local inInstance, instanceType = IsInInstance()
 	-- If we are in an instance we will not use the PARTY_KILL event, since it is protected
 	function events:PARTY_KILL(attackerGUID, targetGUID)
 		--@debug@
+			if isSecret(attackerGUID) then attackerGUID = "Attacker-SECRET" end
+			if isSecret(targetGUID) then targetGUID = "Target-SECRET" end
 				dgks:Print(
 				"DEBUG:EVENT:PARTY_KILL: attackerGUID: " .. tostring(attackerGUID) .. 
 				" targetGUID: " .. tostring(targetGUID) .. 
@@ -2039,17 +2040,15 @@ if classic then
 			local timestamp = GetTime() --Set timestamp because retail does not provide it in the PARTY_KILL event
 			local _, _, _, _, _, vName, playerServer = GetPlayerInfoByGUID(targetGUID)
 			if vName == nil then
-				--Could be an NPC
+				--Could be an NPC, if in an instance even we will still get nil
 				vName, playerServer = UnitNameFromGUID(targetGUID)		
 			end
-			if vName == nil then
-				--This dumb game...
-				vName = "NIL"
+			if vName ~= nil then
+				--@debug@
+				dgks:Print("DEBUG: " .. "Sending "..vName.." and "..timestamp.." to KillshotTX." )
+				--@end-debug@
+				dgks:KillshotTX(vName, timestamp)
 			end
-			--@debug@
-			dgks:Print("DEBUG: " .. "Sending "..vName.." and "..timestamp.." to KillshotTX." )
-			--@end-debug@
-			dgks:KillshotTX(vName, timestamp)
 		end --if attackerGUID
 	end
 	function events:UNIT_DIED(targetGUID)
