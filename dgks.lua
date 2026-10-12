@@ -1,24 +1,7 @@
 --TODO List
---Duel win detection
---Pet kills on Hunters
---Battleground start msg closer to start of bg
---Nemesis notifications
---Log classes on prey/predators
---Feature parity with Killshot
-	-- Random Text
-	-- X Random Pet - No longer possible 
-	-- X Execute
-	-- X Screenshot
-	-- Random Emote
---Reduce externals/libs
---NPC Emote Targeting
---Just making a change so twitch triggers an update
---Cross Character Killer Klvl Kclass KGuild Victim Vlvl VClass VGuild Timestamp Location Killshot_Log
---Cross server ranking system (bnet channels)
-
---Blood Moon Notes
---2/18 17:11:17.231  SPELL_AURA_APPLIED,Player-5814-01E766E1,"Armena-LoneWolf",0x548,0x0,Player-5814-01E766E1,"Armena-LoneWolf",0x548,0x0,436097,"Blood Moon",0x1,BUFF
---2/18 17:30:38.447  SPELL_AURA_REMOVED,Player-5814-01D25EEF,"Nop-LoneWolf",0x511,0x1,Player-5814-01D25EEF,"Nop-LoneWolf",0x511,0x1,436097,"Blood Moon",0x1,BUFF
+-- Cleanup potential name isssue
+-- Find a way to reduce delay without taint
+-- Test duel pets and instance checking
 
 local version = "@project-version@"
 local databaseversion = "1"
@@ -42,9 +25,13 @@ local inArena = false
 local inBG = false
 local lastMessage, lastSender, lastTimestamp --Versionchecking duplicate detection
 local soundPath = "Interface\\AddOns\\dgks\\sounds\\"
+local classic = false -- Assume retail, we will verify below
 
 
-dgks = LibStub("AceAddon-3.0"):NewAddon("dgks", "AceEvent-3.0", "AceConsole-3.0", "LibSink-2.0","AceComm-3.0","AceSerializer-3.0")
+--Is this Classic?
+if C_AddOns.GetAddOnMetadata("MyAddOn", "X-Family") == "Classic" then
+	classic = true
+end
 
 function sortListByLength(t,a,b)
 	local acount, bcount = 0,0
@@ -87,6 +74,8 @@ function getSortedList(mytable, count)
 	end
 	return tempString
 end
+
+dgks = LibStub("AceAddon-3.0"):NewAddon("dgks", "AceEvent-3.0", "AceConsole-3.0", "LibSink-2.0","AceComm-3.0","AceSerializer-3.0")
 
 local function giveOptions() 
 	local options = { 
@@ -1872,8 +1861,9 @@ function dgks:SendCM(cchan,msg)
 	if dgks.db.profile.dobroadcasts then
 
 		-- If not Retail, send to yell
+		-- FIXME can we still yell in retail even though this was a classic fix?
 		-- https://wowpedia.fandom.com/wiki/WOW_PROJECT_ID
-		if WOW_PROJECT_ID ~= 1 then
+		if classic then
 			self:SendCommMessage(cchan,msg,"YELL")
 			--@debug@
 			self:Print("Sending: CChan= " .. cchan .. " " .. msg .. " to YELL")
@@ -2021,14 +2011,14 @@ function dgks:TestPlayerDeath()
 end
 --@end-debug@
 
-if WOW_PROJECT_ID ~= 1 then -- 1 is Retail IF not 1 skip to else section for Retail fix
-	-- This is causing issues in 12.0 since CLEU is no longer available
+if classic then 
 	function events:COMBAT_LOG_EVENT_UNFILTERED(info, event, ...)
 		local timestamp, event, hideCaster, sourceGUID, sourceName, sourceFlags, sourceFlags2, destGUID, destName, destFlags, destFlags2 = CombatLogGetCurrentEventInfo()
 		dgks:CombatLogEventHandler(info, timestamp, event, hideCaster, sourceGUID, sourceName, sourceFlags, sourceFlags2, destGUID, destName, destFlags, destFlags2, ...)
 	end 
-else
+	else
 	-- Retail fix
+	-- This section handles Retail and Forever
 	local inInstance, instanceType = IsInInstance()
 	-- If we are in an instance we will not use the PARTY_KILL event, since it is protected
 	function events:PARTY_KILL(attackerGUID, targetGUID)
@@ -2126,10 +2116,13 @@ end
 function dgks:OnEnable()
 	--self:RegisterEvent("CHAT_MSG_ADDON", "AddonMessageHandler")
 	--OnEvent runs the function events:event
-	frame:HookScript("OnEvent", function(self, event, ...)
+	-- NOTE: must be SetScript (not HookScript) - HookScript is a SecureFrame (Blizzard UI only)
+	-- API; calling it here fires ADDON_ACTION_FORBIDDEN and protects the frame, which then
+	-- also blocks the RegisterEvent calls below.
+	frame:SetScript("OnEvent", function(self, event, ...)
 		events[event](self,...);
 	end);
-	--Regeister all events with function events:event
+	--Register all events with function events:event
 	for k, v in pairs(events) do
 		frame:RegisterEvent(k);
 	end
