@@ -1064,7 +1064,7 @@ local function giveDuels()
 					return dgks.db.profile.duelcustomemote
 				end,
 				set = function(info, b)
-					dgks.db.profile.duelcustomemoteemote = b
+					dgks.db.profile.duelcustomemote = b
 				end,
 				width = "full",
 				order = 40
@@ -1665,7 +1665,7 @@ function dgks:OnCommReceived(cchan, message, distribution, sender)
 		--@end-debug@
 
 		--This should always be a direct whisper
-		self:SendCommMessage("dgksVR",version,WHISPER,sender)
+		self:SendCommMessage("dgksVR",version,"WHISPER",sender)
 
 	elseif cchan == "dgks" or "dgksDUEL" then
 		--Verify we have a valid event	
@@ -1834,13 +1834,13 @@ function dgks:setSoundPack(info, newsoundset)
         self.db.profile.soundpath = soundPath
     elseif (newsoundset == "female") then
 		self.db.profile.soundpack = newsoundset
-		self.db.profile.soundpath = soundPath .. "\female\\"
+		self.db.profile.soundpath = soundPath .. "female\\"
     elseif (newsoundset == "sexy") then
 		self.db.profile.soundpack = newsoundset
-		self.db.profile.soundpath = soundPath .. "\sexy\\"
+		self.db.profile.soundpath = soundPath .. "sexy\\"
     elseif (newsoundset == "baby") then
 		self.db.profile.soundpack = newsoundset
-		self.db.profile.soundpath = soundPath .. "\baby\\"
+		self.db.profile.soundpath = soundPath .. "baby\\"
     else
         message("Error: That is not a valid option")
     end
@@ -2055,7 +2055,7 @@ if classic then
 		if not isSecret(targetGUID) then
 			if targetGUID == playerGUID then
 			-- Player has died
-			self:PlayerDeath("Unknown because of retail")
+			dgks:PlayerDeath("Unknown because of retail")
 			end
 		end
 	end
@@ -2097,7 +2097,7 @@ end
 	if strmatch(msg, format(DUEL_WINNER_RETREAT, "(.-%--.-)", playerName)) then
 		if dgks.db.profile.duelhumiliation then dgks:dgks_SoundPack(dgks.db.profile.kssoundH) end
 		opponent = strmatch(msg, format(DUEL_WINNER_RETREAT, "(.-%--.-)", playerName))
-		self:PlayerLoss(opponent)
+		dgks:PlayerLoss(opponent)
 	--fixme should probably create new msgs for duels in the future
 	-- Opponent fled from Duel
 	elseif strmatch(msg, format(DUEL_WINNER_RETREAT, playerName, "(.-%--.-)")) then
