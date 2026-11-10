@@ -2094,6 +2094,8 @@ function events:ZONE_CHANGED_NEW_AREA(info, event, ...)
 end
 
 function events:CHAT_MSG_BG_SYSTEM_NEUTRAL(msg, ...)
+	-- Chat payloads can be secret values in restricted content; addon code cannot compare them
+	if isSecret(msg) then return end
 	-- Prepare for Battleground
 	if (dgks.db.profile.dopreparesound) then
 		if msg == "The battle begins in 30 seconds!" then dgks:dgks_SoundPack(dgks.db.profile.kssoundP) end
@@ -2101,6 +2103,8 @@ function events:CHAT_MSG_BG_SYSTEM_NEUTRAL(msg, ...)
 end 
 
  function events:CHAT_MSG_SYSTEM(msg, ...)
+	-- Chat payloads can be secret values in restricted content; strmatch/compare on them errors
+	if isSecret(msg) then return end
 	-- Prepare for Duel
 	if (dgks.db.profile.dopreparesound) then
 		if msg == format(DUEL_COUNTDOWN,3) then dgks:dgks_SoundPack(dgks.db.profile.kssoundP) end
