@@ -1773,6 +1773,34 @@ function dgks:PlayerDeath(myKiller)
 	if dgks.db.profile.doscreenshotondeath then Screenshot() end
 end
 
+-- Returns the name of whoever killed the player according to Blizzard's Death Recap, or nil if the
+-- recap is empty/unavailable or the name is a secret value (which cannot be stored or compared).
+-- Prefers the event flagged as the killing blow (overkill >= 0), otherwise the most recent event.
+function dgks:GetRecapKiller()
+	if not (C_DeathRecap and C_DeathRecap.GetRecapEvents) then return nil end
+	local ok, events = pcall(C_DeathRecap.GetRecapEvents)
+	if not ok or type(events) ~= "table" or #events == 0 then return nil end
+
+	local function usable(v, wantType)
+		return type(v) == wantType and not isSecret(v)
+	end
+
+	local best, bestTime
+	for i, ev in ipairs(events) do
+		if type(ev) == "table" then
+			local overkill = usable(ev.overkill, "number") and ev.overkill or -1
+			if overkill >= 0 then best = ev break end
+			local t = usable(ev.timestamp, "number") and ev.timestamp or i
+			if not bestTime or t >= bestTime then best, bestTime = ev, t end
+		end
+	end
+	if not best then return nil end
+	if usable(best.sourceName, "string") and best.sourceName ~= "" then
+		return best.sourceName
+	end
+	return nil
+end
+
 function dgks:GetKillshotSound(streak)
 	if (dgks.db.profile.style == "dota") then
 		-- DoTA Style
@@ -2066,6 +2094,20 @@ if classic then
 	function events:UNIT_DIED(targetGUID)
 		if not isSecret(targetGUID) then
 			if targetGUID == playerGUID then
+			-- Player has died. The combat log is closed to addons on retail/Forever, so ask
+			-- Blizzard's Death Recap who dealt the damage. The recap may not be filled in the
+			-- instant we die, so retry briefly before falling back to the placeholder.
+			local attempts = 0
+			local function resolveKiller()
+				attempts = attempts + 1
+				local killer = dgks:GetRecapKiller()
+				if killer or attempts >= 4 then
+					dgks:PlayerDeath(killer or "Unknown because of retail")
+				else
+					C_Timer.After(0.5, resolveKiller)
+				end
+			end
+			C_Timer.After(0.5, resolveKiller)
 			-- Player has died
 			dgks:PlayerDeath("Unknown because of retail")
 			end
