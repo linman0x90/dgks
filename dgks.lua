@@ -1988,20 +1988,25 @@ function dgks:SendCM(cchan,msg)
 			for i = 1, onlineBFriends  do
 				for j = 1, C_BattleNet.GetFriendNumGameAccounts(i) do
 					local game = C_BattleNet.GetFriendGameAccountInfo(i, j)
-					if game.characterName == nil or game.realmName == nil or game.factionName == nil then
-						break
-					end
-							--@debug@
-							self:Print("BNET: " .. j .. "Name: " .. game.characterName .. "Realm: " .. game.realmName .. GetRealmName())
-							--@end-debug@
-					--if game.realmName == GetRealmName() and game.factionName == UnitFactionGroup("player") then
-					if game.factionName == UnitFactionGroup("player") then
-						self:SendCommMessage(cchan,msg,"WHISPER",game.characterName)
-						
+					-- A friend can have several game accounts online at once (the Battle.net app, the mobile app,
+					-- a game). Skip the ones that are not a character and keep looking: stopping at the first of
+					-- them ("break") skipped every friend whose app was listed before their game.
+					-- Now that every entry is looked at, also skip characters in another version of WoW: they
+					-- cannot be whispered from this one.
+					if game and game.characterName ~= nil and game.realmName ~= nil and game.factionName ~= nil
+						and (game.wowProjectID == nil or game.wowProjectID == WOW_PROJECT_ID) then
 						--@debug@
-						self:Print("Sending: CChan= " .. cchan .. " " .. msg .. " to WHISPER " .. game.characterName)
+						self:Print("BNET: " .. j .. "Name: " .. game.characterName .. "Realm: " .. game.realmName .. GetRealmName())
 						--@end-debug@
-						--C_ChatInfo.SendAddonMessage(prefix, message, "WHISPER", info.name)
+						--if game.realmName == GetRealmName() and game.factionName == UnitFactionGroup("player") then
+						if game.factionName == UnitFactionGroup("player") then
+							self:SendCommMessage(cchan,msg,"WHISPER",game.characterName)
+
+							--@debug@
+							self:Print("Sending: CChan= " .. cchan .. " " .. msg .. " to WHISPER " .. game.characterName)
+							--@end-debug@
+							--C_ChatInfo.SendAddonMessage(prefix, message, "WHISPER", info.name)
+						end
 					end
 				end
 			end
