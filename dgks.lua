@@ -1802,6 +1802,13 @@ function dgks:ScrollText(msg)
 	tinsert(dgks.db.profile.killlog, 1, "[" .. date() .. "] " .. msg)
 	if (dgks.db.profile.killlog[21]) then tremove(dgks.db.profile.killlog,21) end
 	
+	-- Also print to the chat window when "Print killshots and deaths in chatbox" is on, so the
+	-- text is visible even if the combat text output isn't. Skip when the output sink is already
+	-- ChatFrame, otherwise the line would print twice.
+	if dgks.db.profile.dochatbox and dgks.db.profile.sink20OutputSink ~= "ChatFrame" then
+		dgks:Print(msg)
+	end
+
 	if (dgks.db.profile.docombattext) then
 		--if (GetCVar("enableFloatingCombatText") == "0") then
 		--	dgks:Print("Setting Combat Scrolling Text for Self to enabled. Please /reload your UI or restart client.")
