@@ -1064,7 +1064,7 @@ local function giveDuels()
 					return dgks.db.profile.duelcustomemote
 				end,
 				set = function(info, b)
-					dgks.db.profile.duelcustomemoteemote = b
+					dgks.db.profile.duelcustomemote = b
 				end,
 				width = "full",
 				order = 40
@@ -1665,7 +1665,7 @@ function dgks:OnCommReceived(cchan, message, distribution, sender)
 		--@end-debug@
 
 		--This should always be a direct whisper
-		self:SendCommMessage("dgksVR",version,WHISPER,sender)
+		self:SendCommMessage("dgksVR",version,"WHISPER",sender)
 
 	elseif cchan == "dgks" or "dgksDUEL" then
 		--Verify we have a valid event	
@@ -1830,6 +1830,13 @@ function dgks:ScrollText(msg)
 	tinsert(dgks.db.profile.killlog, 1, "[" .. date() .. "] " .. msg)
 	if (dgks.db.profile.killlog[21]) then tremove(dgks.db.profile.killlog,21) end
 	
+	-- Also print to the chat window when "Print killshots and deaths in chatbox" is on, so the
+	-- text is visible even if the combat text output isn't. Skip when the output sink is already
+	-- ChatFrame, otherwise the line would print twice.
+	if dgks.db.profile.dochatbox and dgks.db.profile.sink20OutputSink ~= "ChatFrame" then
+		dgks:Print(msg)
+	end
+
 	if (dgks.db.profile.docombattext) then
 		--if (GetCVar("enableFloatingCombatText") == "0") then
 		--	dgks:Print("Setting Combat Scrolling Text for Self to enabled. Please /reload your UI or restart client.")
@@ -1862,13 +1869,13 @@ function dgks:setSoundPack(info, newsoundset)
         self.db.profile.soundpath = soundPath
     elseif (newsoundset == "female") then
 		self.db.profile.soundpack = newsoundset
-		self.db.profile.soundpath = soundPath .. "\female\\"
+		self.db.profile.soundpath = soundPath .. "female\\"
     elseif (newsoundset == "sexy") then
 		self.db.profile.soundpack = newsoundset
-		self.db.profile.soundpath = soundPath .. "\sexy\\"
+		self.db.profile.soundpath = soundPath .. "sexy\\"
     elseif (newsoundset == "baby") then
 		self.db.profile.soundpack = newsoundset
-		self.db.profile.soundpath = soundPath .. "\baby\\"
+		self.db.profile.soundpath = soundPath .. "baby\\"
     else
         message("Error: That is not a valid option")
     end
@@ -2002,6 +2009,20 @@ function dgks:SendCM(cchan,msg)
 	end
 end
 
+-- TargetCheck is used outside of debugging, so it must stay out of the debug block below.
+-- The packager does not nest debug blocks, so an inner one would end the outer one early.
+function dgks:TargetCheck(victimName)
+	if victimName == playerGUID then return false end 	--Victim is player lets dip out
+	--@debug@
+	dgks:Print("DEBUG:dgks:TargetCheck(" .. victimName .. ")")
+	--@end-debug@
+	if string.find(victimName, "Player", 1, true) ~= nil then -- Retail/Froever is dumb and always returns false on UnitIsPlayer, so we have to check the GUID string for "Player" to determine if it is a player or not
+   		return true
+	else
+    	return false
+	end
+end
+
 --@debug@
 -- Dev Debugging functions
 function dgks:Test()
@@ -2018,18 +2039,6 @@ function dgks:Test()
 	self:CombatLogEventHandler(info,GetTime(),"PARTY_KILL",false,"Player-9-00064F35","Ratchet-Kil'jaeden",0x511,0x0,"Player-3676-09BED6E0","Test-Victim",0x10548,0x0)
 	self:CombatLogEventHandler(info,GetTime(),"SPELL_DAMAGE",false,"Player-9-00064F35","Ratchet-Kil'jaeden",0x511,0x0,"Player-3676-09BED6E0","Test-Victim",0x10548,0x0,585,"Smite",0x2,0000000000000000,0000000000000000,0,0,0,0,0,-1,0,0,0,0.00,0.00,628,0.0000,0,930,969,249,2,0,0,0,nil,nil,nil)
 	self:CombatLogEventHandler(info,GetTime(),"UNIT_DIED",false,0000000000000000,nil,0x80000000,0x80000000,"Player-3676-09BED6E0","Test-Victim",0x10548,0x0)
-end
-
-function dgks:TargetCheck(victimName)
-	if victimName == playerGUID then return false end 	--Victim is player lets dip out
-	--@debug@
-	dgks:Print("DEBUG:dgks:TargetCheck(" .. victimName .. ")")
-	--@end-debug@
-	if string.find(victimName, "Player", 1, true) ~= nil then -- Retail/Froever is dumb and always returns false on UnitIsPlayer, so we have to check the GUID string for "Player" to determine if it is a player or not
-   		return true
-	else
-    	return false
-	end
 end
 
 function dgks:TestPlayerDeath()
@@ -2054,6 +2063,9 @@ if classic then
 	local inInstance, instanceType = IsInInstance()
 	-- If we are in an instance we will not use the PARTY_KILL event, since it is protected
 	function events:PARTY_KILL(attackerGUID, targetGUID)
+		-- In restricted content the GUIDs arrive as secret values, which addon code cannot compare or inspect.
+		-- This guard must stay outside the debug block below, which is stripped from release builds.
+		if isSecret(attackerGUID) or isSecret(targetGUID) then return end
 		--@debug@
 			if isSecret(attackerGUID) then attackerGUID = "Attacker-SECRET" end
 			if isSecret(targetGUID) then targetGUID = "Target-SECRET" end
@@ -2096,6 +2108,8 @@ if classic then
 				end
 			end
 			C_Timer.After(0.5, resolveKiller)
+			-- Player has died
+			dgks:PlayerDeath("Unknown because of retail")
 			end
 		end
 	end
@@ -2122,6 +2136,8 @@ function events:ZONE_CHANGED_NEW_AREA(info, event, ...)
 end
 
 function events:CHAT_MSG_BG_SYSTEM_NEUTRAL(msg, ...)
+	-- Chat payloads can be secret values in restricted content; addon code cannot compare them
+	if isSecret(msg) then return end
 	-- Prepare for Battleground
 	if (dgks.db.profile.dopreparesound) then
 		if msg == "The battle begins in 30 seconds!" then dgks:dgks_SoundPack(dgks.db.profile.kssoundP) end
@@ -2129,6 +2145,8 @@ function events:CHAT_MSG_BG_SYSTEM_NEUTRAL(msg, ...)
 end 
 
  function events:CHAT_MSG_SYSTEM(msg, ...)
+	-- Chat payloads can be secret values in restricted content; strmatch/compare on them errors
+	if isSecret(msg) then return end
 	-- Prepare for Duel
 	if (dgks.db.profile.dopreparesound) then
 		if msg == format(DUEL_COUNTDOWN,3) then dgks:dgks_SoundPack(dgks.db.profile.kssoundP) end
@@ -2137,7 +2155,7 @@ end
 	if strmatch(msg, format(DUEL_WINNER_RETREAT, "(.-%--.-)", playerName)) then
 		if dgks.db.profile.duelhumiliation then dgks:dgks_SoundPack(dgks.db.profile.kssoundH) end
 		opponent = strmatch(msg, format(DUEL_WINNER_RETREAT, "(.-%--.-)", playerName))
-		self:PlayerLoss(opponent)
+		dgks:PlayerLoss(opponent)
 	--fixme should probably create new msgs for duels in the future
 	-- Opponent fled from Duel
 	elseif strmatch(msg, format(DUEL_WINNER_RETREAT, playerName, "(.-%--.-)")) then
