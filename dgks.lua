@@ -2076,7 +2076,7 @@ if classic then
 				" dgksTargetCheck: " .. tostring(dgks:TargetCheck(targetGUID)))
 		--@end-debug@
 		-- If we are attacker and victim is a playr or pve is enabled, send the killshot
-		if attackerGUID == playerGUID and dgks:TargetCheck(targetGUID) or dgks.db.profile.dopve then
+		if attackerGUID == playerGUID and (dgks:TargetCheck(targetGUID) or dgks.db.profile.dopve) then
 			local timestamp = GetTime() --Set timestamp because retail does not provide it in the PARTY_KILL event
 			local _, _, _, _, _, vName, playerServer = GetPlayerInfoByGUID(targetGUID)
 			if vName == nil then
