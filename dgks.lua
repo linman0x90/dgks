@@ -16,6 +16,7 @@ local lastrxtimestamp = 0
 local lastkill = 0
 local timestamp = 0
 local lastToHurtMe = ""
+local lastLocalKillKey -- "victimGUID@timestamp" of the last kill we processed locally
 local newestconfigversion = 1
 local frame, events = CreateFrame("Frame"), {}; -- Event Frame
 local damageDealers = {}
@@ -1508,7 +1509,7 @@ function dgks:CombatLogEventHandler(info, timestamp, event, hideCaster, sourceGU
 				--@end-debug@
 				
 				-- The player has landed a killshot
-				self:KillshotTX(destName, timestamp)
+				self:KillshotTX(destName, timestamp, destGUID)
 			end
 		end
 	end
@@ -1529,7 +1530,7 @@ function dgks:CombatLogEventHandler(info, timestamp, event, hideCaster, sourceGU
 				self:Print("DEBUG: " .. "Sending "..destName.." and "..timestamp.." to KillshotTX." )
 				--@end-debug@
 				-- The player has landed a killshot,this detection method is fooled by Feign Death so we do PARTY_KILL ALSO
-				self:KillshotTX(destName, timestamp)
+				self:KillshotTX(destName, timestamp, destGUID)
 			end
 		end
 	end
@@ -1577,7 +1578,15 @@ function dgks:CombatLogEventHandler(info, timestamp, event, hideCaster, sourceGU
 	end 
 end
 
-function dgks:KillshotTX(txvictim,txtimestamp)
+function dgks:KillshotTX(txvictim,txtimestamp,txvictimGUID)
+	-- One death is one kill. If the same death is reported twice with the same victim and timestamp
+	-- (the combat-log path can do that through PARTY_KILL and the pet-credited UNIT_DIED branch), drop
+	-- the repeat. This used to be caught by the duplicate check on our own broadcast coming back.
+	if txvictimGUID ~= nil and not isSecret(txvictimGUID) then
+		local key = tostring(txvictimGUID) .. "@" .. tostring(txtimestamp)
+		if key == lastLocalKillKey then return end
+		lastLocalKillKey = key
+	end
 	-- Process the detect killshot
 	-- Increment killshot streak 
 	streak = streak + 1
@@ -1597,9 +1606,12 @@ function dgks:KillshotTX(txvictim,txtimestamp)
 	-- Reset deathstreak
 	deathstreak = 0
 	
-	-- Broadcast our Killshot
+	-- Handle it locally first: sounds and text must not depend on our own broadcast coming back
+	-- (it does not when we are in no guild or group, or when addon messages are locked down).
+	self:ProcessKillshot("dgks", playerName, txvictim, txtimestamp, streak, multikill, true)
+
+	-- Then broadcast our Killshot to other dgks users. Our own echo is dropped in OnCommReceived.
 	self:SendCM("dgks",dgks:Serialize(playerName,txvictim,txtimestamp,streak,multikill))
-	
 end
 
 function dgks:DuelTX(txvictim,txtimestamp)
@@ -1610,7 +1622,8 @@ function dgks:DuelTX(txvictim,txtimestamp)
 	-- Reset deathstreak
 	deathstreak = 0
 	
-	-- Broadcast our duel win
+	-- Handle it locally first (see KillshotTX), then broadcast our duel win
+	self:ProcessKillshot("dgksDUEL", playerName, txvictim, txtimestamp, streak, multikill, true)
 	self:SendCM("dgksDUEL",dgks:Serialize(playerName,txvictim,txtimestamp,streak,multikill))
 end
 
@@ -1667,93 +1680,119 @@ function dgks:OnCommReceived(cchan, message, distribution, sender)
 		--This should always be a direct whisper
 		self:SendCommMessage("dgksVR",version,"WHISPER",sender)
 
-	elseif cchan == "dgks" or "dgksDUEL" then
-		--Verify we have a valid event	
+	elseif cchan == "dgks" or cchan == "dgksDUEL" then
+		-- Our own kills are handled locally in KillshotTX/DuelTX, so a message from ourselves is only
+		-- the echo of our own broadcast (GUILD/PARTY/RAID/INSTANCE_CHAT deliver it back to us). The echo
+		-- is recognised by who sent it, not by the killer name inside the message, so that another
+		-- player who shares our name is still heard.
+		if dgks:IsOwnSender(sender) then return end
+		--Verify we have a valid event
 		local ok,rxkiller,rxvictim,rxtimestamp,rxstreak,rxmultikill = dgks:Deserialize(message)
-		if not ok then return else
-		
-			-- Check for duplicates here
-			if rxkiller == lastrxkiller and rxvictim == lastrxvictim and rxtimestamp == lastrxtimestamp then return	end
-			-- Set duplicate prevention variables
-			lastrxkiller, lastrxvictim, lastrxtimestamp = rxkiller, rxvictim, rxtimestamp
-		
-			-- Generate Text
-			if cchan == "dgks" then 
-				killshottext = string.gsub(string.gsub(dgks.db.profile.kstext, "$k", rxkiller), "$v", rxvictim)
-				-- Killshot Emotes
-				if (dgks.db.profile.dotxtemote and playerName == rxkiller) then
-					emotestring=string.gsub(string.gsub(dgks.db.profile.ksemote, "$v", rxvictim), "$s", streak)
-					local emoteText = emotestring
-					-- Defer the chat send out of the CHAT_MSG_ADDON handler context to avoid tainting the player
-					C_Timer.After(0, function() SendChatMessage(emoteText, "EMOTE") end)
-				end
-				if (dgks.db.profile.doemote ~= "none" and playerName == rxkiller) then
-					-- fixme targeting doesn't seem to work with NPCs
-					local emote = dgks.db.profile.doemote
-					-- Defer the emote out of the CHAT_MSG_ADDON handler context to avoid tainting the player
-					C_Timer.After(0, function() DoEmote(emote, rxvictim) end)
-				end
-			else
-				killshottext = string.gsub(string.gsub(dgks.db.profile.dueltext, "$k", rxkiller), "$v", rxvictim)
-				--Duel Emotes
-				if (dgks.db.profile.dueltxtemote and playerName == rxkiller) then
-					emotestring=string.gsub(string.gsub(dgks.db.profile.duelcustomemote, "$v", rxvictim), "$s", streak)
-					local emoteText = emotestring
-					-- Defer the chat send out of the CHAT_MSG_ADDON handler context to avoid tainting the player
-					C_Timer.After(0, function() SendChatMessage(emoteText, "EMOTE") end)
-				end
-				if (dgks.db.profile.duelemotewin ~= "none" and playerName == rxkiller) then
-					-- fixme targeting doesn't seem to work with NPCs
-					local emote = dgks.db.profile.duelemotewin
-					-- Defer the emote out of the CHAT_MSG_ADDON handler context to avoid tainting the player
-					C_Timer.After(0, function() DoEmote(emote, rxvictim) end)
-				end
-			end
-			
-			-- Send to sink for local output
-			-- Defer sink output (a Channel sink would call SendChatMessage) out of the CHAT_MSG_ADDON handler context
-			local sinkText = killshottext
-			C_Timer.After(0, function() self:ScrollText(sinkText) end)
-			
-			-- Process multikill and play appropiate sound and text
-			if rxmultikill > 0 then
-				-- Defer sink output (a Channel sink would call SendChatMessage) out of the CHAT_MSG_ADDON handler context
-				local multikillText = rxkiller .. " got a " .. self.db.profile.kstextM[rxmultikill] .. "!"
-				C_Timer.After(0, function() self:ScrollText(multikillText) end)
-				self:dgks_SoundPack(self.db.profile.kssoundM[rxmultikill])
-			else
-				self:dgks_SoundPack(dgks:GetKillshotSound(rxstreak))
-			end
-
-			-- We have landed a kill
-			if playerName == rxkiller then
-				local setMaxStreak = false
-				
-				-- Increment maxstreak if this is a record high
-				if ( streak > dgks.db.profile.maxstreak ) then 
-					dgks.db.profile.maxstreak = streak
-					setMaxStreak = true
-				end
-						
-				-- This now triggers a global cool and most likely cannot work anymore
-				-- if dgks.db.profile.dopet then C_PetJournal.SummonRandomPet(allPets) end
-				
-				if dgks.db.profile.doscreenshotonkill then Screenshot()
-				elseif dgks.db.profile.doscreenshotonstreak and setMaxStreak then Screenshot()
-				elseif dgks.db.profile.doscreenshotonmultikill and rxmultikill > 0 then Screenshot() end
-				
-				-- Store in killList
-				if not dgks.db.profile.killList[rxvictim] then dgks.db.profile.killList[rxvictim] = {} end
-				tinsert(dgks.db.profile.killList[rxvictim], date("%m/%d/%y %H:%M:%S"))
-				--fixme this count my be inaccurate due to the way lua handles tables without numeric index
-				if (dgks.db.profile.dochatbox) then dgks:Print("You have killed "..rxvictim.." "..#dgks.db.profile.killList[rxvictim].." times.") end
-			end
+		if ok then
+			dgks:ProcessKillshot(cchan, rxkiller, rxvictim, rxtimestamp, rxstreak, rxmultikill, false)
 		end
 	end
 
 	--Set duplicate prevention variables
 	lastMessage, lastSender, lastTimestamp = message, sender, timestamp
 
+end
+
+-- Is this addon-message sender our own character? Senders can arrive as "Name-Realm";
+-- Ambiguate() strips our own realm.
+function dgks:IsOwnSender(sender)
+	if isSecret(sender) or type(sender) ~= "string" or playerName == nil then return false end
+	if sender == playerName then return true end
+	if type(Ambiguate) == "function" then
+		local ok, short = pcall(Ambiguate, sender, "none")
+		if ok and not isSecret(short) and short == playerName then return true end
+	end
+	return false
+end
+
+-- Handle one killshot ("dgks") or duel result ("dgksDUEL"): play the sound, show the text, do
+-- emotes/screenshots and update the stats. Called directly for our own kills (isLocal = true) and
+-- from OnCommReceived for kills broadcast by other dgks users (isLocal = false).
+function dgks:ProcessKillshot(cchan, rxkiller, rxvictim, rxtimestamp, rxstreak, rxmultikill, isLocal)
+	-- Check for duplicates here: several channels (GUILD and PARTY, say) can deliver the same kill
+	-- from the same player. Our own kills come straight from the game and are never duplicates.
+	if not isLocal then
+		if rxkiller == lastrxkiller and rxvictim == lastrxvictim and rxtimestamp == lastrxtimestamp then return end
+		-- Set duplicate prevention variables
+		lastrxkiller, lastrxvictim, lastrxtimestamp = rxkiller, rxvictim, rxtimestamp
+	end
+
+	-- Generate Text
+	local killshottext
+	if cchan == "dgks" then
+		killshottext = string.gsub(string.gsub(dgks.db.profile.kstext, "$k", rxkiller), "$v", rxvictim)
+		-- Killshot Emotes
+		if (dgks.db.profile.dotxtemote and isLocal) then
+			local emoteText = string.gsub(string.gsub(dgks.db.profile.ksemote, "$v", rxvictim), "$s", streak)
+			-- Defer the chat send out of the event handler context to avoid tainting the player
+			C_Timer.After(0, function() SendChatMessage(emoteText, "EMOTE") end)
+		end
+		if (dgks.db.profile.doemote ~= "none" and isLocal) then
+			-- fixme targeting doesn't seem to work with NPCs
+			local emote = dgks.db.profile.doemote
+			-- Defer the emote out of the event handler context to avoid tainting the player
+			C_Timer.After(0, function() DoEmote(emote, rxvictim) end)
+		end
+	else
+		killshottext = string.gsub(string.gsub(dgks.db.profile.dueltext, "$k", rxkiller), "$v", rxvictim)
+		--Duel Emotes
+		if (dgks.db.profile.dueltxtemote and isLocal) then
+			local emoteText = string.gsub(string.gsub(dgks.db.profile.duelcustomemote, "$v", rxvictim), "$s", streak)
+			-- Defer the chat send out of the event handler context to avoid tainting the player
+			C_Timer.After(0, function() SendChatMessage(emoteText, "EMOTE") end)
+		end
+		if (dgks.db.profile.duelemotewin ~= "none" and isLocal) then
+			-- fixme targeting doesn't seem to work with NPCs
+			local emote = dgks.db.profile.duelemotewin
+			-- Defer the emote out of the event handler context to avoid tainting the player
+			C_Timer.After(0, function() DoEmote(emote, rxvictim) end)
+		end
+	end
+
+	-- Send to sink for local output
+	-- Defer sink output (a Channel sink would call SendChatMessage) out of the event handler context
+	local sinkText = killshottext
+	C_Timer.After(0, function() self:ScrollText(sinkText) end)
+
+	-- Process multikill and play appropiate sound and text
+	if rxmultikill > 0 then
+		-- Defer sink output (a Channel sink would call SendChatMessage) out of the event handler context
+		local multikillText = rxkiller .. " got a " .. self.db.profile.kstextM[rxmultikill] .. "!"
+		C_Timer.After(0, function() self:ScrollText(multikillText) end)
+		self:dgks_SoundPack(self.db.profile.kssoundM[rxmultikill])
+	else
+		self:dgks_SoundPack(dgks:GetKillshotSound(rxstreak))
+	end
+
+	-- We have landed a kill. Only a kill detected here is ours: a broadcast from another player is
+	-- never added to our stats, even if it carries our name.
+	if isLocal then
+		local setMaxStreak = false
+
+		-- Increment maxstreak if this is a record high
+		if ( streak > dgks.db.profile.maxstreak ) then
+			dgks.db.profile.maxstreak = streak
+			setMaxStreak = true
+		end
+
+		-- This now triggers a global cool and most likely cannot work anymore
+		-- if dgks.db.profile.dopet then C_PetJournal.SummonRandomPet(allPets) end
+
+		if dgks.db.profile.doscreenshotonkill then Screenshot()
+		elseif dgks.db.profile.doscreenshotonstreak and setMaxStreak then Screenshot()
+		elseif dgks.db.profile.doscreenshotonmultikill and rxmultikill > 0 then Screenshot() end
+
+		-- Store in killList
+		if not dgks.db.profile.killList[rxvictim] then dgks.db.profile.killList[rxvictim] = {} end
+		tinsert(dgks.db.profile.killList[rxvictim], date("%m/%d/%y %H:%M:%S"))
+		--fixme this count my be inaccurate due to the way lua handles tables without numeric index
+		if (dgks.db.profile.dochatbox) then dgks:Print("You have killed "..rxvictim.." "..#dgks.db.profile.killList[rxvictim].." times.") end
+	end
 end
 
 function dgks:PlayerDeath(myKiller)
@@ -1890,13 +1929,7 @@ end
 function dgks:SendCM(cchan,msg)
 	-- Example usage: self:SendCM("dgksDUEL",dgks:Serialize(playerName,txvictim,txtimestamp,streak,multikill)
 
-	-- Whisper to ourselves if broadcasts are off or guild is off or we are not in a guild
-	if not dgks.db.profile.dobroadcasts or not dgks.db.profile.doguild or not IsInGuild() then
-		--@debug@
-		self:Print("Sending: CChan= " .. cchan .. " " .. msg .. " to WHISPER " .. playerName)
-		--@end-debug@
-		self:SendCommMessage(cchan,msg,"WHISPER",playerName)
-	end
+	-- Our own kills are already handled locally (ProcessKillshot), so no whisper to ourselves is needed.
 
 	if dgks.db.profile.dobroadcasts then
 
@@ -2087,7 +2120,7 @@ if classic then
 				--@debug@
 				dgks:Print("DEBUG: " .. "Sending "..vName.." and "..timestamp.." to KillshotTX." )
 				--@end-debug@
-				dgks:KillshotTX(vName, timestamp)
+				dgks:KillshotTX(vName, timestamp, targetGUID)
 			end
 		end --if attackerGUID
 	end
