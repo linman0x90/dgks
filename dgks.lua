@@ -1974,6 +1974,20 @@ function dgks:SendCM(cchan,msg)
 	end
 end
 
+-- TargetCheck is used outside of debugging, so it must stay out of the debug block below.
+-- The packager does not nest debug blocks, so an inner one would end the outer one early.
+function dgks:TargetCheck(victimName)
+	if victimName == playerGUID then return false end 	--Victim is player lets dip out
+	--@debug@
+	dgks:Print("DEBUG:dgks:TargetCheck(" .. victimName .. ")")
+	--@end-debug@
+	if string.find(victimName, "Player", 1, true) ~= nil then -- Retail/Froever is dumb and always returns false on UnitIsPlayer, so we have to check the GUID string for "Player" to determine if it is a player or not
+   		return true
+	else
+    	return false
+	end
+end
+
 --@debug@
 -- Dev Debugging functions
 function dgks:Test()
@@ -1990,18 +2004,6 @@ function dgks:Test()
 	self:CombatLogEventHandler(info,GetTime(),"PARTY_KILL",false,"Player-9-00064F35","Ratchet-Kil'jaeden",0x511,0x0,"Player-3676-09BED6E0","Test-Victim",0x10548,0x0)
 	self:CombatLogEventHandler(info,GetTime(),"SPELL_DAMAGE",false,"Player-9-00064F35","Ratchet-Kil'jaeden",0x511,0x0,"Player-3676-09BED6E0","Test-Victim",0x10548,0x0,585,"Smite",0x2,0000000000000000,0000000000000000,0,0,0,0,0,-1,0,0,0,0.00,0.00,628,0.0000,0,930,969,249,2,0,0,0,nil,nil,nil)
 	self:CombatLogEventHandler(info,GetTime(),"UNIT_DIED",false,0000000000000000,nil,0x80000000,0x80000000,"Player-3676-09BED6E0","Test-Victim",0x10548,0x0)
-end
-
-function dgks:TargetCheck(victimName)
-	if victimName == playerGUID then return false end 	--Victim is player lets dip out
-	--@debug@
-	dgks:Print("DEBUG:dgks:TargetCheck(" .. victimName .. ")")
-	--@end-debug@
-	if string.find(victimName, "Player", 1, true) ~= nil then -- Retail/Froever is dumb and always returns false on UnitIsPlayer, so we have to check the GUID string for "Player" to determine if it is a player or not
-   		return true
-	else
-    	return false
-	end
 end
 
 function dgks:TestPlayerDeath()
