@@ -2028,6 +2028,9 @@ if classic then
 	local inInstance, instanceType = IsInInstance()
 	-- If we are in an instance we will not use the PARTY_KILL event, since it is protected
 	function events:PARTY_KILL(attackerGUID, targetGUID)
+		-- In restricted content the GUIDs arrive as secret values, which addon code cannot compare or inspect.
+		-- This guard must stay outside the debug block below, which is stripped from release builds.
+		if isSecret(attackerGUID) or isSecret(targetGUID) then return end
 		--@debug@
 			if isSecret(attackerGUID) then attackerGUID = "Attacker-SECRET" end
 			if isSecret(targetGUID) then targetGUID = "Target-SECRET" end
