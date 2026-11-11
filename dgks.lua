@@ -1622,9 +1622,10 @@ function dgks:DuelTX(txvictim,txtimestamp)
 	-- Reset deathstreak
 	deathstreak = 0
 	
-	-- Handle it locally first (see KillshotTX), then broadcast our duel win
-	self:ProcessKillshot("dgksDUEL", playerName, txvictim, txtimestamp, streak, multikill, true)
-	self:SendCM("dgksDUEL",dgks:Serialize(playerName,txvictim,txtimestamp,streak,multikill))
+	-- Handle it locally first (see KillshotTX), then broadcast our duel win.
+	-- A duel is never a multikill: the multikill counter belongs to the last killshot, so send 0.
+	self:ProcessKillshot("dgksDUEL", playerName, txvictim, txtimestamp, streak, 0, true)
+	self:SendCM("dgksDUEL",dgks:Serialize(playerName,txvictim,txtimestamp,streak,0))
 end
 
 function dgks:PlayerLoss(myKiller)
