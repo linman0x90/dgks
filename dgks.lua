@@ -1892,7 +1892,19 @@ function dgks:ScrollText(msg)
 		--	dgks:Print("Setting Combat Scrolling Text for Self to enabled. Please /reload your UI or restart client.")
 		--	SetCVar("enableFloatingCombatText", 1)
 		--end
-		dgks:Pour(msg, 1.0, 0.1, 0.1)
+		-- The selected output can raise an error (Blizzard's floating combat text does on 12.x-based
+		-- clients when fed from addon code). Never let that reach the player: show the line in the
+		-- error frame instead.
+		local ok = pcall(dgks.Pour, dgks, msg, 1.0, 0.1, 0.1)
+		if not ok then
+			if UIErrorsFrame and UIErrorsFrame.AddMessage then
+				UIErrorsFrame:AddMessage(msg, 1.0, 0.1, 0.1, 1.0)
+			end
+			if not dgks.pourFallbackNoticed then
+				dgks.pourFallbackNoticed = true
+				dgks:Print("The selected text output raised an error. Showing killshot text in the error frame instead; pick another output under /dgks > Combat Text Output.")
+			end
+		end
 		
 	end
 end
