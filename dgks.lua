@@ -1854,7 +1854,7 @@ end
 function dgks:GetKillshotSound(streak)
 	if (dgks.db.profile.style == "dota") then
 		-- DoTA Style
-		for x = 7, 0, -1 do
+		for x = 7, 1, -1 do
 			if (dgks.db.profile.ksrank[x] > 0) and (streak >= dgks.db.profile.ksrank[x]) then return dgks.db.profile.kssound[x]; end
 		end
 	else
