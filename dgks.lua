@@ -1715,6 +1715,16 @@ end
 -- emotes/screenshots and update the stats. Called directly for our own kills (isLocal = true) and
 -- from OnCommReceived for kills broadcast by other dgks users (isLocal = false).
 function dgks:ProcessKillshot(cchan, rxkiller, rxvictim, rxtimestamp, rxstreak, rxmultikill, isLocal)
+	-- The values may come from another player's client: ignore anything that is not shaped like a kill
+	if type(rxkiller) ~= "string" or type(rxvictim) ~= "string" or type(rxstreak) ~= "number" or type(rxmultikill) ~= "number" then return end
+	if rxmultikill ~= rxmultikill then return end -- NaN
+	-- and keep the multikill number a whole number inside the configured text/sound tables
+	rxmultikill = math.floor(rxmultikill)
+	if rxmultikill > #self.db.profile.kstextM then rxmultikill = #self.db.profile.kstextM end
+	if rxmultikill < 0 then rxmultikill = 0 end
+	-- The names are used as string.gsub replacement text below, where "%" has a special meaning
+	local killerText, victimText = rxkiller:gsub("%%", "%%%%"), rxvictim:gsub("%%", "%%%%")
+
 	-- Check for duplicates here: several channels (GUILD and PARTY, say) can deliver the same kill
 	-- from the same player. Our own kills come straight from the game and are never duplicates.
 	if not isLocal then
@@ -1726,10 +1736,10 @@ function dgks:ProcessKillshot(cchan, rxkiller, rxvictim, rxtimestamp, rxstreak, 
 	-- Generate Text
 	local killshottext
 	if cchan == "dgks" then
-		killshottext = string.gsub(string.gsub(dgks.db.profile.kstext, "$k", rxkiller), "$v", rxvictim)
+		killshottext = string.gsub(string.gsub(dgks.db.profile.kstext, "$k", killerText), "$v", victimText)
 		-- Killshot Emotes
 		if (dgks.db.profile.dotxtemote and isLocal) then
-			local emoteText = string.gsub(string.gsub(dgks.db.profile.ksemote, "$v", rxvictim), "$s", streak)
+			local emoteText = string.gsub(string.gsub(dgks.db.profile.ksemote, "$v", victimText), "$s", streak)
 			-- Defer the chat send out of the event handler context to avoid tainting the player
 			C_Timer.After(0, function() SendChatMessage(emoteText, "EMOTE") end)
 		end
@@ -1740,10 +1750,10 @@ function dgks:ProcessKillshot(cchan, rxkiller, rxvictim, rxtimestamp, rxstreak, 
 			C_Timer.After(0, function() DoEmote(emote, rxvictim) end)
 		end
 	else
-		killshottext = string.gsub(string.gsub(dgks.db.profile.dueltext, "$k", rxkiller), "$v", rxvictim)
+		killshottext = string.gsub(string.gsub(dgks.db.profile.dueltext, "$k", killerText), "$v", victimText)
 		--Duel Emotes
 		if (dgks.db.profile.dueltxtemote and isLocal) then
-			local emoteText = string.gsub(string.gsub(dgks.db.profile.duelcustomemote, "$v", rxvictim), "$s", streak)
+			local emoteText = string.gsub(string.gsub(dgks.db.profile.duelcustomemote, "$v", victimText), "$s", streak)
 			-- Defer the chat send out of the event handler context to avoid tainting the player
 			C_Timer.After(0, function() SendChatMessage(emoteText, "EMOTE") end)
 		end
