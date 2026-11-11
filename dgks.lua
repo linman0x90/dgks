@@ -2161,6 +2161,16 @@ if classic then
 	end
 end
 
+-- Are we inside an arena or battleground? This decides which chat channel carries broadcasts.
+-- (The old check "IsActiveBattlefieldArena() ~= nil" was always true, because that function
+-- returns false, not nil, outside arenas.)
+local function updatePvPInstanceState()
+	local _, instanceType = IsInInstance()
+	if isSecret(instanceType) then instanceType = nil end
+	inArena = (instanceType == "arena")
+	inBG = (instanceType == "pvp")
+end
+
 function events:ZONE_CHANGED_NEW_AREA(info, event, ...)
 	
 	if (dgks.db.profile.dozonechange) then
@@ -2169,8 +2179,7 @@ function events:ZONE_CHANGED_NEW_AREA(info, event, ...)
 	end
 
 	-- Check for Arena and Battleground
-	if IsActiveBattlefieldArena() ~=nil then inArena = true else inArena = false end
-	if UnitInBattleground("Player") ~= nil then inBG = true else inBG = false end
+	updatePvPInstanceState()
 
 	--if (dgks.db.profile.dopreparesound) then
 		--local junk
@@ -2179,6 +2188,11 @@ function events:ZONE_CHANGED_NEW_AREA(info, event, ...)
 			--fixme dgks:dgks_SoundPack(dgks.db.profile.kssoundP)
 		--end
 	--end
+end
+
+function events:PLAYER_ENTERING_WORLD()
+	-- Login or /reload inside a battleground or arena: ZONE_CHANGED_NEW_AREA does not fire then
+	updatePvPInstanceState()
 end
 
 function events:CHAT_MSG_BG_SYSTEM_NEUTRAL(msg, ...)
