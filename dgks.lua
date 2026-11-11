@@ -2135,27 +2135,29 @@ if classic then
 			end
 		end --if attackerGUID
 	end
-	function events:UNIT_DIED(targetGUID)
-		if not isSecret(targetGUID) then
-			if targetGUID == playerGUID then
-			-- Player has died. The combat log is closed to addons on retail/Forever, so ask
-			-- Blizzard's Death Recap who dealt the damage. The recap may not be filled in the
-			-- instant we die, so retry briefly before falling back to the placeholder.
-			local attempts = 0
-			local function resolveKiller()
-				attempts = attempts + 1
-				local killer = dgks:GetRecapKiller()
-				if killer or attempts >= 4 then
-					dgks:PlayerDeath(killer or "Unknown because of retail")
-				else
-					C_Timer.After(0.5, resolveKiller)
-				end
-			end
-			C_Timer.After(0.5, resolveKiller)
-			-- Player has died
-			dgks:PlayerDeath("Unknown because of retail")
+	local deathPending = false
+	function events:PLAYER_DEAD()
+		-- We have died. PLAYER_DEAD fires once per death and carries nothing to compare, so it also works
+		-- where UNIT_DIED hides its GUID. The combat log is closed to addons on retail/Forever, so ask
+		-- Blizzard's Death Recap who dealt the damage. The recap may not be filled in the instant we
+		-- die, so retry briefly before falling back to the placeholder. Each death is recorded once.
+		if deathPending then return end
+		deathPending = true
+		streak = 0
+		local attempts = 0
+		local function resolveKiller()
+			attempts = attempts + 1
+			-- A failing lookup must not leave deathPending set, or later deaths would be ignored
+			local ok, killer = pcall(dgks.GetRecapKiller, dgks)
+			if not ok then killer = nil end
+			if killer or attempts >= 4 then
+				deathPending = false
+				dgks:PlayerDeath(killer or "Unknown because of retail")
+			else
+				C_Timer.After(0.5, resolveKiller)
 			end
 		end
+		C_Timer.After(0.5, resolveKiller)
 	end
 end
 
