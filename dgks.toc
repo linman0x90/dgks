@@ -33,3 +33,4 @@ dgks.lua
 dgks_history.lua
 dgks_history_ui.lua
 dgks_minimap.lua
+dgks_deathrecap.lua

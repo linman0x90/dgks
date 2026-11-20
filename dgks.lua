@@ -134,6 +134,15 @@ local function giveGeneral()
 		name = "General",
 		handler = dgks,
 		args = {
+			deathRecapWindow = {
+				type = 'toggle',
+				name = 'Show a death recap when you die',
+				desc = 'Open a window listing the damage you took in the last 10 seconds before dying. Reopen it with /dgks deathrecap.',
+				get = function() return dgks.db.profile.deathRecap end,
+				set = function(info, v) dgks.db.profile.deathRecap = v end,
+				order = 2,
+				width = "full"
+			},
 			minimapButton = {
 				type = 'toggle',
 				name = 'Show minimap button',
@@ -1381,6 +1390,7 @@ local defaults = {
 		historyTooltip = true, -- Show kill and death counts when mousing over a player
 		minimap = { hide = false, angle = 200 }, -- Minimap button (dgks_minimap.lua)
 		guessKiller = true, -- When the Death Recap cannot name the killer, record the likely one
+		deathRecap = true, -- Open the death recap window when we die (dgks_deathrecap.lua)
 	},
 }
 
@@ -1433,6 +1443,10 @@ function dgks:OnInitialize()
 	SlashCmdList.DGKS = function(msg)
 		if type(msg) == "string" and msg:lower():match("^%s*history") then
 			dgks.History:ToggleWindow()
+			return
+		end
+		if type(msg) == "string" and msg:lower():match("^%s*deathrecap") then
+			dgks:ToggleDeathRecap()
 			return
 		end
 		if type(msg) == "string" and msg:lower():match("^%s*recap") then
@@ -1828,6 +1842,15 @@ function dgks:PlayerDeath(myKiller, flags, guid)
 		end
 	end
 	dgks.History:Record("D", myKiller, guid, nil, nil, flags)
+	local recapKiller = myKiller
+	if flags and flags.unknown then
+		recapKiller = "killer unknown (" .. myKiller .. ")"
+	elseif flags and flags.guessed then
+		recapKiller = "likely killed by " .. myKiller
+	else
+		recapKiller = "killed by " .. myKiller
+	end
+	pcall(dgks.ShowDeathRecap, dgks, recapKiller)
 	if dgks.db.profile.doscreenshotondeath then Screenshot() end
 end
 
@@ -2214,6 +2237,8 @@ end
 if classic then 
 	function events:COMBAT_LOG_EVENT_UNFILTERED(info, event, ...)
 		local timestamp, event, hideCaster, sourceGUID, sourceName, sourceFlags, sourceFlags2, destGUID, destName, destFlags, destFlags2 = CombatLogGetCurrentEventInfo()
+		-- Keep the last seconds of damage we take for the death recap window (dgks_deathrecap.lua)
+		if destGUID == playerGUID then pcall(dgks.TrackDamageTaken, dgks, CombatLogGetCurrentEventInfo()) end
 		dgks:CombatLogEventHandler(info, timestamp, event, hideCaster, sourceGUID, sourceName, sourceFlags, sourceFlags2, destGUID, destName, destFlags, destFlags2, ...)
 	end 
 	else
