@@ -366,7 +366,16 @@ local function render(recap)
 		if i <= shown and d then fillRow(rowsFrames[i], d) else rowsFrames[i]:Hide() end
 	end
 
-	frame.title:SetText("|cffff4040You died|r" .. (recap.killer and (" - " .. recap.killer) or ""))
+	-- Title: who killed us, with their class and spec when known
+	local title = "|cffff4040You died|r" .. (recap.killer and (" - " .. recap.killer) or "")
+	local rec = recap.record
+	if rec and not dgks.History.IsUnknown(rec) and (rec.oc or rec.os) then
+		local cs = dgks.History.ClassSpecText(rec.oc, rec.os)
+		local c = rec.oc and RAID_CLASS_COLORS and RAID_CLASS_COLORS[rec.oc]
+		if c then cs = ("|cff%02x%02x%02x%s|r"):format(c.r * 255, c.g * 255, c.b * 255, cs) end
+		if cs ~= "" then title = title .. " (" .. cs .. ")" end
+	end
+	frame.title:SetText(title)
 
 	-- Total damage in the window, when every amount is readable
 	local total, readable = 0, true
@@ -377,10 +386,13 @@ local function render(recap)
 	if #rows == 0 then
 		sub = "No damage was recorded before this death."
 	elseif readable then
-		sub = ("%d hits, %s damage in the last %d seconds"):format(#rows, short(total), WINDOW)
+		sub = ("%d %s, %s damage in the last %d seconds"):format(#rows, #rows == 1 and "hit" or "hits", short(total), WINDOW)
 	else
-		sub = ("%d hits in the last %d seconds"):format(#rows, WINDOW)
+		sub = ("%d %s in the last %d seconds"):format(#rows, #rows == 1 and "hit" or "hits", WINDOW)
 	end
+	-- Where it happened
+	local where = rec and dgks.History.LocationText(rec) or ""
+	if where ~= "" then sub = where .. "  |  " .. sub end
 	frame.subtitle:SetText(sub)
 
 	local notes = {}
@@ -395,14 +407,15 @@ local function render(recap)
 end
 
 -- Called when the player dies. killer is the text recorded as the killer (or nil).
-function dgks:ShowDeathRecap(killer)
+-- record: the history record of this death (for the killer's class and spec, and the location)
+function dgks:ShowDeathRecap(killer, record)
 	local rows = fromCombatLog(GetTime())
 	local source = "combatlog"
 	if #rows == 0 then
 		rows = fromDeathRecap()
 		source = "blizzard"
 	end
-	lastRecap = { rows = rows, killer = killer, source = source }
+	lastRecap = { rows = rows, killer = killer, source = source, record = record }
 	if dgks.db.profile.deathRecap then
 		local ok, err = pcall(render, lastRecap)
 		--@debug@

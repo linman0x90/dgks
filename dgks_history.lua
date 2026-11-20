@@ -145,6 +145,8 @@ local FIELDS = {
 	u = { "number", { 1, 1 } },  -- the killer is not known; o says why ("Hidden by the game", ...)
 	g = { "number", { 1, 1 } },  -- the killer is a guess: an enemy player targeting us when we died
 	gn = { "number", { 1, 40 } }, -- how many enemy players were targeting us then
+	os = { "number", { 1, 100000 } }, -- opponent spec ID (when an inspect found it)
+	cs = { "number", { 1, 100000 } }, -- author spec ID
 }
 local REQUIRED = { a = true, e = true, s = true, t = true, k = true, o = true }
 
@@ -245,6 +247,16 @@ end
 
 -- Details about a player we can read from their GUID
 local function opponentInfo(rec, guid)
+	-- The player cache (dgks_players.lua) knows players we have seen: the Death Recap only gives a
+	-- killer's name, so look it up there for their GUID, level and spec
+	local seen = dgks.Players and dgks.Players:Lookup(rec.o, usable(guid, "string") and guid or nil)
+	if seen then
+		if not usable(guid, "string") then guid = seen.guid end
+		if seen.class then rec.oc = seen.class end
+		if seen.race then rec.orc = seen.race end
+		if seen.level then rec.ol = seen.level end
+		if seen.spec then rec.os = seen.spec end
+	end
 	if not usable(guid, "string") then return end
 	if not guid:match("^Player%-") then return end
 	rec.p = 1
@@ -280,10 +292,11 @@ end
 -- { guessed = n } when opponent is a guess made from n enemy players targeting us.
 -- Called from the kill and death handlers, so a failure here must never reach them.
 function H:Record(kind, opponent, guid, streak, multikill, flags)
-	local ok, err = pcall(H.RecordUnsafe, H, kind, opponent, guid, streak, multikill, flags)
+	local ok, result = pcall(H.RecordUnsafe, H, kind, opponent, guid, streak, multikill, flags)
 	--@debug@
-	if not ok then dgks:Print("DEBUG: History record failed: " .. tostring(err)) end
+	if not ok then dgks:Print("DEBUG: History record failed: " .. tostring(result)) end
 	--@end-debug@
+	if ok then return result end
 end
 
 function H:RecordUnsafe(kind, opponent, guid, streak, multikill, flags)
@@ -298,6 +311,8 @@ function H:RecordUnsafe(kind, opponent, guid, streak, multikill, flags)
 	if usable(classFile, "string") then rec.c = classFile end
 	local level = UnitLevel("player")
 	if usable(level, "number") then rec.l = level end
+	local mySpec = dgks.Players and dgks.Players.MySpec()
+	if mySpec then rec.cs = mySpec end
 	local zone, subzone = GetRealZoneText(), GetSubZoneText()
 	if usable(zone, "string") and zone ~= "" then rec.z = zone:sub(1, 100) end
 	if usable(subzone, "string") and subzone ~= "" then rec.sz = subzone:sub(1, 100) end
@@ -337,6 +352,7 @@ function H:RecordUnsafe(kind, opponent, guid, streak, multikill, flags)
 		send("GUILD", nil, "NORMAL", "R", guildKey, rec)
 	end
 	H:NotifyChanged()
+	return records[#records]
 end
 
 -- Sync ------------------------------------------------------------------------------------------

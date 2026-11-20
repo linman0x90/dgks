@@ -254,6 +254,36 @@ local function when(t)
 end
 
 -- The opponent cell: grey for an unknown killer, "(likely)" after a guessed one
+-- "Fire Mage" when the spec is known, otherwise "Mage"
+local function classSpec(classFile, specID)
+	local cls = className(classFile)
+	local spec = specID and dgks.Players and dgks.Players.SpecInfo(specID)
+	if spec then return cls ~= "" and (spec .. " " .. cls) or spec end
+	return cls
+end
+H.ClassSpecText = classSpec
+
+-- "Refuge Pointe, Arathi Highlands", or just the zone
+local function location(rec)
+	if rec.sz and rec.z and rec.sz ~= rec.z then return rec.sz .. ", " .. rec.z end
+	return rec.z or rec.sz or ""
+end
+H.LocationText = location
+
+local RACE_NAMES = { Scourge = "Undead", HighmountainTauren = "Highmountain Tauren", LightforgedDraenei = "Lightforged Draenei",
+	DarkIronDwarf = "Dark Iron Dwarf", MagharOrc = "Mag'har Orc", KulTiran = "Kul Tiran", ZandalariTroll = "Zandalari Troll",
+	VoidElf = "Void Elf", Nightborne = "Nightborne", EarthenDwarf = "Earthen", Dracthyr = "Dracthyr", Vulpera = "Vulpera" }
+
+-- "Level 80 Human Fire Mage"
+local function describe(level, raceFile, classFile, specID)
+	local parts = {}
+	if level and level > 0 then parts[#parts + 1] = "Level " .. level end
+	if raceFile then parts[#parts + 1] = RACE_NAMES[raceFile] or raceFile end
+	local cs = classSpec(classFile, specID)
+	if cs ~= "" then parts[#parts + 1] = cs end
+	return table.concat(parts, " ")
+end
+
 local function opponentText(rec, name)
 	if H.IsUnknown(rec) then return "|cff9d9d9d" .. name .. "|r" end
 	local text = classColored(name, rec.oc)
@@ -265,21 +295,21 @@ local function recordTip(rec)
 	return function(tt)
 		tt:AddLine(("%s: %s"):format(H.KIND_NAMES[rec.k] or "?", H.ShortName(rec.o)))
 		tt:AddDoubleLine("When", date("%Y-%m-%d %H:%M:%S", rec.t), 1, 1, 1, 1, 1, 1)
-		if rec.a then tt:AddDoubleLine("Player", H.ShortName(rec.a), 1, 1, 1, 1, 1, 1) end
-		if rec.z then
-			local place = rec.z
-			if rec.sz then place = place .. " - " .. rec.sz end
-			tt:AddDoubleLine("Where", place, 1, 1, 1, 1, 1, 1)
+		if rec.oc or rec.orc or rec.ol or rec.os then
+			tt:AddDoubleLine("Opponent", classColored(describe(rec.ol, rec.orc, rec.oc, rec.os), rec.oc), 1, 1, 1, 1, 1, 1)
 		end
-		if rec.i and rec.i ~= "none" then tt:AddDoubleLine("Instance", rec.i, 1, 1, 1, 1, 1, 1) end
-		if rec.oc or rec.orc or rec.ol then
-			local parts = {}
-			if rec.ol and rec.ol > 0 then parts[#parts + 1] = "Level " .. rec.ol end
-			if rec.orc then parts[#parts + 1] = rec.orc end
-			if rec.oc then parts[#parts + 1] = className(rec.oc) end
-			tt:AddDoubleLine("Opponent", table.concat(parts, " "), 1, 1, 1, 1, 1, 1)
+		if rec.a then
+			local who = H.ShortName(rec.a)
+			local detail = describe(rec.l, nil, rec.c, rec.cs)
+			if detail ~= "" then who = who .. ", " .. detail end
+			tt:AddDoubleLine("Player", classColored(who, rec.c), 1, 1, 1, 1, 1, 1)
 		end
-		if rec.l then tt:AddDoubleLine("Your level", tostring(rec.l), 1, 1, 1, 1, 1, 1) end
+		local place = location(rec)
+		if place ~= "" then tt:AddDoubleLine("Location", place, 1, 1, 1, 1, 1, 1) end
+		if rec.i and rec.i ~= "none" then
+			local kinds = { pvp = "Battleground", arena = "Arena", party = "Dungeon", raid = "Raid", scenario = "Scenario" }
+			tt:AddDoubleLine("Instance", kinds[rec.i] or rec.i, 1, 1, 1, 1, 1, 1)
+		end
 		if rec.st and rec.st > 0 then tt:AddDoubleLine("Streak", tostring(rec.st), 1, 1, 1, 1, 1, 1) end
 		if rec.mk then tt:AddDoubleLine("Multikill", tostring(rec.mk + 1) .. " kills", 1, 1, 1, 1, 1, 1) end
 		if rec.lg then tt:AddLine("Imported from the old kill and death lists", 0.6, 0.6, 0.6) end
@@ -338,21 +368,22 @@ end
 local TABS = {
 	mine = {
 		columns = {
-			{ title = "When", width = 0.20 },
-			{ title = "Type", width = 0.11 },
-			{ title = "Opponent", width = 0.24, desc = false },
-			{ title = "Class", width = 0.12, desc = false },
-			{ title = "Zone", width = 0.25, desc = false },
-			{ title = "Streak", width = 0.08, align = "RIGHT" },
+			{ title = "When", width = 0.17 },
+			{ title = "Type", width = 0.10 },
+			{ title = "Opponent", width = 0.21, desc = false },
+			{ title = "Class", width = 0.17, desc = false },
+			{ title = "Location", width = 0.28, desc = false },
+			{ title = "Streak", width = 0.07, align = "RIGHT" },
 		},
 		rows = function()
 			local rows = {}
 			for _, rec in ipairs(H:PersonalRecords()) do
 				local opp = H.ShortName(rec.o)
-				if passes(rec, { opp, rec.z, rec.sz }) then
+				local cls, place = classSpec(rec.oc, rec.os), location(rec)
+				if passes(rec, { opp, rec.z, rec.sz, cls }) then
 					rows[#rows + 1] = {
-						cells = { when(rec.t), kindText(rec.k), opponentText(rec, opp), className(rec.oc), rec.z or "", rec.st and tostring(rec.st) or "" },
-						sort = { rec.t, rec.k, opp:lower(), className(rec.oc), (rec.z or ""):lower(), rec.st or 0 },
+						cells = { when(rec.t), kindText(rec.k), opponentText(rec, opp), classColored(cls, rec.oc), place, rec.st and tostring(rec.st) or "" },
+						sort = { rec.t, rec.k, opp:lower(), cls, place:lower(), rec.st or 0 },
 						tip = recordTip(rec),
 					}
 				end
@@ -362,20 +393,22 @@ local TABS = {
 	},
 	guild = {
 		columns = {
-			{ title = "When", width = 0.20 },
-			{ title = "Member", width = 0.20, desc = false },
-			{ title = "Type", width = 0.11 },
-			{ title = "Opponent", width = 0.24, desc = false },
-			{ title = "Zone", width = 0.25, desc = false },
+			{ title = "When", width = 0.16 },
+			{ title = "Member", width = 0.15, desc = false },
+			{ title = "Type", width = 0.09 },
+			{ title = "Opponent", width = 0.18, desc = false },
+			{ title = "Class", width = 0.16, desc = false },
+			{ title = "Location", width = 0.26, desc = false },
 		},
 		rows = function()
 			local rows = {}
 			for _, rec in ipairs(H:GuildRecords()) do
 				local member, opp = H.ShortName(rec.a), H.ShortName(rec.o)
-				if passes(rec, { member, opp, rec.z, rec.sz }) then
+				local cls, place = classSpec(rec.oc, rec.os), location(rec)
+				if passes(rec, { member, opp, rec.z, rec.sz, cls }) then
 					rows[#rows + 1] = {
-						cells = { when(rec.t), classColored(member, rec.c), kindText(rec.k), opponentText(rec, opp), rec.z or "" },
-						sort = { rec.t, member:lower(), rec.k, opp:lower(), (rec.z or ""):lower() },
+						cells = { when(rec.t), classColored(member, rec.c), kindText(rec.k), opponentText(rec, opp), classColored(cls, rec.oc), place },
+						sort = { rec.t, member:lower(), rec.k, opp:lower(), cls, place:lower() },
 						tip = recordTip(rec),
 					}
 				end
@@ -386,12 +419,12 @@ local TABS = {
 	opponents = {
 		noKindFilter = true,
 		columns = {
-			{ title = "Opponent", width = 0.26, desc = false },
-			{ title = "Class", width = 0.14, desc = false },
-			{ title = "Kills", width = 0.10, align = "RIGHT" },
-			{ title = "Deaths", width = 0.10, align = "RIGHT" },
-			{ title = "Duels W-L", width = 0.14, align = "RIGHT" },
-			{ title = "Last seen", width = 0.26 },
+			{ title = "Opponent", width = 0.23, desc = false },
+			{ title = "Class", width = 0.22, desc = false },
+			{ title = "Kills", width = 0.09, align = "RIGHT" },
+			{ title = "Deaths", width = 0.09, align = "RIGHT" },
+			{ title = "Duels W-L", width = 0.12, align = "RIGHT" },
+			{ title = "Last seen", width = 0.25 },
 		},
 		rows = function()
 			local byName, list = {}, {}
@@ -407,13 +440,14 @@ local TABS = {
 					o[rec.k] = o[rec.k] + 1
 					if rec.t >= o.last then o.last = rec.t end
 					if rec.oc then o.class = rec.oc end
+					if rec.os then o.spec = rec.os end
 				end
 			end
 			local rows = {}
 			for _, o in ipairs(list) do
 				rows[#rows + 1] = {
-					cells = { classColored(o.name, o.class), className(o.class), tostring(o.K), tostring(o.D), o.W .. "-" .. o.L, when(o.last) },
-					sort = { o.name:lower(), className(o.class), o.K, o.D, o.W - o.L, o.last },
+					cells = { classColored(o.name, o.class), classColored(classSpec(o.class, o.spec), o.class), tostring(o.K), tostring(o.D), o.W .. "-" .. o.L, when(o.last) },
+					sort = { o.name:lower(), classSpec(o.class, o.spec), o.K, o.D, o.W - o.L, o.last },
 				}
 			end
 			return rows
@@ -422,14 +456,14 @@ local TABS = {
 	guildopponents = {
 		noKindFilter = true,
 		columns = {
-			{ title = "Opponent", width = 0.19, desc = false },
-			{ title = "Class", width = 0.11, desc = false },
-			{ title = "Kills", width = 0.08, align = "RIGHT" },
-			{ title = "Deaths", width = 0.09, align = "RIGHT" },
-			{ title = "Duels W-L", width = 0.11, align = "RIGHT" },
-			{ title = "Fought by", width = 0.10, align = "RIGHT" },
-			{ title = "Top killer", width = 0.16, desc = false },
-			{ title = "Last seen", width = 0.16 },
+			{ title = "Opponent", width = 0.16, desc = false },
+			{ title = "Class", width = 0.17, desc = false },
+			{ title = "Kills", width = 0.07, align = "RIGHT" },
+			{ title = "Deaths", width = 0.08, align = "RIGHT" },
+			{ title = "Duels W-L", width = 0.10, align = "RIGHT" },
+			{ title = "Fought by", width = 0.09, align = "RIGHT" },
+			{ title = "Top killer", width = 0.15, desc = false },
+			{ title = "Last seen", width = 0.18 },
 		},
 		rows = function()
 			local byKey, list = {}, {}
@@ -447,6 +481,7 @@ local TABS = {
 					o[rec.k] = o[rec.k] + 1
 					if rec.t >= o.last then o.last = rec.t end
 					if rec.oc then o.class = rec.oc end
+					if rec.os then o.spec = rec.os end
 					local m = o.members[member]
 					if not m then
 						m = { name = member, class = rec.c, K = 0, D = 0, W = 0, L = 0 }
@@ -473,9 +508,9 @@ local TABS = {
 					topSort = top.name:lower()
 				end
 				rows[#rows + 1] = {
-					cells = { classColored(o.name, o.class), className(o.class), tostring(o.K), tostring(o.D),
+					cells = { classColored(o.name, o.class), classColored(classSpec(o.class, o.spec), o.class), tostring(o.K), tostring(o.D),
 						o.W .. "-" .. o.L, tostring(o.memberCount), topText, when(o.last) },
-					sort = { o.name:lower(), className(o.class), o.K, o.D, o.W - o.L, o.memberCount, topSort, o.last },
+					sort = { o.name:lower(), classSpec(o.class, o.spec), o.K, o.D, o.W - o.L, o.memberCount, topSort, o.last },
 					tip = function(tt)
 						tt:AddLine(classColored(o.name, o.class))
 						tt:AddLine(("Guild: %d kills, %d deaths, duels %d-%d"):format(o.K, o.D, o.W, o.L), 1, 1, 1)
@@ -857,6 +892,16 @@ function H:SettingsArgs(base)
 			desc = "On retail the Death Recap sometimes cannot name your killer. Record an enemy player who was targeting you when you died instead, marked \"likely\". Right in a 1v1, a guess in group fights.",
 			get = function() return dgks.db.profile.guessKiller end,
 			set = function(_, v) dgks.db.profile.guessKiller = v end,
+		},
+		historyInspect = {
+			type = "toggle",
+			order = base + 44.8,
+			width = "full",
+			name = "Look up enemy specs",
+			desc = "Quietly inspect enemy players near you (at most one every 2 seconds) so kills and deaths can record their spec. Turn off if it interferes with other addons that inspect.",
+			hidden = function() return not GetInspectSpecialization end,
+			get = function() return dgks.db.profile.inspectSpecs end,
+			set = function(_, v) dgks.db.profile.inspectSpecs = v end,
 		},
 		historyRetention = {
 			type = "range",

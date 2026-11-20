@@ -1448,6 +1448,7 @@ local defaults = {
 		minimap = { hide = false, angle = 200 }, -- Minimap button (dgks_minimap.lua)
 		guessKiller = true, -- When the Death Recap cannot name the killer, record the likely one
 		deathRecap = true, -- Open the death recap window when we die (dgks_deathrecap.lua)
+		inspectSpecs = true, -- Inspect nearby enemy players to learn their spec (dgks_players.lua)
 	},
 }
 
@@ -1888,7 +1889,7 @@ function dgks:PlayerDeath(myKiller, flags, guid)
 			dgks:Print("You been murdered by "..myKiller.." "..#dgks.db.profile.deathList[myKiller].." times.")
 		end
 	end
-	dgks.History:Record("D", myKiller, guid, nil, nil, flags)
+	local rec = dgks.History:Record("D", myKiller, guid, nil, nil, flags)
 	local recapKiller = myKiller
 	if flags and flags.unknown then
 		recapKiller = "killer unknown (" .. myKiller .. ")"
@@ -1897,7 +1898,7 @@ function dgks:PlayerDeath(myKiller, flags, guid)
 	else
 		recapKiller = "killed by " .. myKiller
 	end
-	pcall(dgks.ShowDeathRecap, dgks, recapKiller)
+	pcall(dgks.ShowDeathRecap, dgks, recapKiller, rec)
 	if dgks.db.profile.doscreenshotondeath then Screenshot() end
 end
 
@@ -2286,6 +2287,12 @@ if classic then
 		local timestamp, event, hideCaster, sourceGUID, sourceName, sourceFlags, sourceFlags2, destGUID, destName, destFlags, destFlags2 = CombatLogGetCurrentEventInfo()
 		-- Keep the last seconds of damage we take for the death recap window (dgks_deathrecap.lua)
 		if destGUID == playerGUID then pcall(dgks.TrackDamageTaken, dgks, CombatLogGetCurrentEventInfo()) end
+		-- Remember the players we fight, so kill and death records can name their class (dgks_players.lua)
+		if destGUID == playerGUID then
+			dgks.Players:NoteCombatant(sourceGUID, sourceName)
+		elseif sourceGUID == playerGUID then
+			dgks.Players:NoteCombatant(destGUID, destName)
+		end
 		dgks:CombatLogEventHandler(info, timestamp, event, hideCaster, sourceGUID, sourceName, sourceFlags, sourceFlags2, destGUID, destName, destFlags, destFlags2, ...)
 	end 
 	else
@@ -2519,6 +2526,7 @@ function dgks:OnEnable()
 	playerClass, _, playerRace, playerSex, _, playerName, _ = GetPlayerInfoByGUID(playerGUID)
 
 	self.History:Enable()
+	self.Players:Enable()
 	self:SetupMinimapButton()
 
 	--@debug@
