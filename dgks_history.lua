@@ -37,9 +37,10 @@ local REQUEST_TIMEOUT = 120           -- seconds before a request that got no an
 local MAX_STREAMS_PER_REQUEST = 40
 local MAX_RECORDS_PER_ANSWER = 300    -- per stream per request; the rest follows next round
 local RECORDS_PER_BATCH = 8
-local KINDS = { K = true, D = true, W = true, L = true } -- Kill, Death, duel Win, duel Loss
+-- Kill, Death, duel Win, duel Loss, and X: a killing blow by a party or raid member that we saw
+local KINDS = { K = true, D = true, W = true, L = true, X = true }
 
-H.KIND_NAMES = { K = "Kill", D = "Death", W = "Duel win", L = "Duel loss" }
+H.KIND_NAMES = { K = "Kill", D = "Death", W = "Duel win", L = "Duel loss", X = "Team kill" }
 
 local queue = {}          -- outgoing messages waiting for a moment when sending is allowed
 local pending = {}        -- [stream] = { peer = name, at = time } requests we are waiting on
@@ -97,12 +98,20 @@ local function cutoff()
 	return now() - retentionDays() * 86400
 end
 
--- Addon traffic in instances and combat is restricted on clients with secret values; queue it.
+-- Can sync traffic go out now? On clients with secret values, addon messages are blocked while the
+-- game reports chat messaging lockdown (encounters, Mythic+ and the like). Battlegrounds and arenas
+-- are not restricted, so records are shared during the match. Dungeons, raids and scenarios wait
+-- until we leave, to keep sync traffic out of group content.
 local function canSend()
 	if issecretvalue == nil then return true end
-	if InCombatLockdown() then return false end
-	local inInstance = IsInInstance()
-	return not inInstance
+	if C_ChatInfo and C_ChatInfo.InChatMessagingLockdown then
+		local ok, locked = pcall(C_ChatInfo.InChatMessagingLockdown)
+		if not ok or isSecret(locked) or locked == true then return false end
+	end
+	local inInstance, instanceType = IsInInstance()
+	if isSecret(inInstance) or isSecret(instanceType) then return false end
+	if not inInstance then return true end
+	return instanceType == "pvp" or instanceType == "arena"
 end
 
 local function send(dist, target, prio, ...)
@@ -147,6 +156,9 @@ local FIELDS = {
 	gn = { "number", { 1, 40 } }, -- how many enemy players were targeting us then
 	os = { "number", { 1, 100000 } }, -- opponent spec ID (when an inspect found it)
 	cs = { "number", { 1, 100000 } }, -- author spec ID
+	kn = { "string", 64 }, -- team kill (X): the killer, "Name-Realm"
+	kc = { "string", 20 }, -- team kill: killer class file
+	ks = { "number", { 1, 100000 } }, -- team kill: killer spec ID
 }
 local REQUIRED = { a = true, e = true, s = true, t = true, k = true, o = true }
 
@@ -225,12 +237,46 @@ function H:Prune()
 end
 
 -- Every record in the current guild store, as a list
+-- Two records within this many seconds of each other describe the same kill
+local SAME_KILL_WINDOW = 15
+
+-- Every record in the current guild store, as a list. Team kills (X) are dropped when the killer
+-- recorded the kill themselves, or when another member already reported the same kill.
 function H:GuildRecords()
-	local list = {}
+	local list, teamKills = {}, {}
 	local store = guildStore(false)
 	if not store then return list end
+	local ownKills = {} -- [killerKey|victimKey] = { times }
 	for _, st in pairs(store.streams) do
-		for _, rec in pairs(st.r) do list[#list + 1] = rec end
+		for _, rec in pairs(st.r) do
+			if rec.k == "X" then
+				teamKills[#teamKills + 1] = rec
+			else
+				list[#list + 1] = rec
+				if rec.k == "K" then
+					local key = (H.PlayerKey(rec.a) or "?") .. "|" .. (H.OpponentKey(rec) or "?")
+					ownKills[key] = ownKills[key] or {}
+					table.insert(ownKills[key], rec.t)
+				end
+			end
+		end
+	end
+	local function near(times, t)
+		if not times then return false end
+		for _, other in ipairs(times) do
+			if math.abs(other - t) <= SAME_KILL_WINDOW then return true end
+		end
+		return false
+	end
+	table.sort(teamKills, function(a, b) return a.t < b.t end)
+	local seen = {}
+	for _, rec in ipairs(teamKills) do
+		local key = (H.PlayerKey(rec.kn, rec.a and rec.a:match("%-(.+)$")) or "?") .. "|" .. (H.OpponentKey(rec) or "?")
+		if not near(ownKills[key], rec.t) and not near(seen[key], rec.t) then
+			seen[key] = seen[key] or {}
+			table.insert(seen[key], rec.t)
+			list[#list + 1] = rec
+		end
 	end
 	return list
 end
@@ -299,6 +345,26 @@ function H:Record(kind, opponent, guid, streak, multikill, flags)
 	if ok then return result end
 end
 
+-- A killing blow by a party or raid member on another player, seen through PARTY_KILL (retail) or
+-- the combat log (Classic). Recorded as a team kill: in our history, and in guild history when the
+-- killer is a guild member, where it counts as their kill.
+function H:RecordTeamKill(killerGUID, victimGUID)
+	if not dgks.db.profile.recordTeamKills then return end
+	if not (usable(killerGUID, "string") and usable(victimGUID, "string")) then return end
+	if not victimGUID:match("^Player%-") then return end
+	local function info(guid)
+		local ok, _, classFile, _, _, _, name, realm = pcall(GetPlayerInfoByGUID, guid)
+		if not ok or not usable(name, "string") or name == "" then return nil end
+		if not usable(realm, "string") or realm == "" then realm = myRealm end
+		return name .. "-" .. realm, usable(classFile, "string") and classFile or nil
+	end
+	local killerName, killerClass = info(killerGUID)
+	local victimName = info(victimGUID)
+	if not killerName or not victimName then return end
+	local spec = dgks.Players and dgks.Players:SpecFor(killerGUID)
+	return H:Record("X", victimName, victimGUID, nil, nil, { killer = { name = killerName, class = killerClass, spec = spec } })
+end
+
 function H:RecordUnsafe(kind, opponent, guid, streak, multikill, flags)
 	if not KINDS[kind] or not usable(opponent, "string") or opponent == "" then return end
 	if not myName then H:UpdateIdentity() end
@@ -325,6 +391,13 @@ function H:RecordUnsafe(kind, opponent, guid, streak, multikill, flags)
 	if usable(streak, "number") then rec.st = streak end
 	if usable(multikill, "number") and multikill > 0 then rec.mk = multikill end
 	if LEGACY_UNKNOWN[rec.o] or (flags and flags.unknown) then rec.u = 1 end
+	if kind == "X" then
+		local killer = flags and flags.killer
+		if not (killer and usable(killer.name, "string")) then return end
+		rec.kn = killer.name:sub(1, 64)
+		if usable(killer.class, "string") then rec.kc = killer.class end
+		if usable(killer.spec, "number") then rec.ks = killer.spec end
+	end
 	if flags and type(flags.guessed) == "number" then
 		rec.g = 1
 		rec.gn = math.max(1, math.min(40, math.floor(flags.guessed)))
@@ -332,6 +405,8 @@ function H:RecordUnsafe(kind, opponent, guid, streak, multikill, flags)
 
 	-- Shared records get a place in our stream
 	local store = dgks.db.profile.historyShare and guildStore(true)
+	-- A team kill is guild history only when the killer is in our guild
+	if store and kind == "X" and not (flags and flags.killer and roster[H.FullName(flags.killer.name)]) then store = nil end
 	if store then
 		local stream = dgks.db.char.historyStream
 		if not stream or stream.a ~= myName then
@@ -607,9 +682,12 @@ function H.OpponentKey(rec)
 	return H.PlayerKey(rec.o, authorRealm(rec))
 end
 
-local function buildCounts(records, into)
+-- teamKills: count team kills (X) as kills; true for the guild, false for our own counts
+local function buildCounts(records, into, teamKills)
 	for _, rec in ipairs(records) do
-		if (rec.k == "K" or rec.k == "D") and not H.IsUnknown(rec) then
+		local kind = rec.k
+		if kind == "X" and teamKills then kind = "K" end
+		if (kind == "K" or kind == "D") and not H.IsUnknown(rec) then
 			local key = H.PlayerKey(rec.o, authorRealm(rec))
 			if key then
 				local c = into[key]
@@ -617,7 +695,7 @@ local function buildCounts(records, into)
 					c = { K = 0, D = 0 }
 					into[key] = c
 				end
-				c[rec.k] = c[rec.k] + 1
+				c[kind] = c[kind] + 1
 			end
 		end
 	end
@@ -629,7 +707,7 @@ function H:CountsFor(key)
 	if not H.countCache then
 		local cache = { personal = {}, guild = {} }
 		buildCounts(H:PersonalRecords(), cache.personal)
-		buildCounts(H:GuildRecords(), cache.guild)
+		buildCounts(H:GuildRecords(), cache.guild, true)
 		H.countCache = cache
 	end
 	local none = { K = 0, D = 0 }
@@ -668,7 +746,7 @@ function H:SyncNow()
 	wipe(pending)
 	H:SendSummary()
 	if not canSend() then
-		dgks:Print("History sync is waiting until you leave combat or the instance.")
+		dgks:Print("History sync is waiting: the game is restricting addon messages, or you are in a dungeon or raid.")
 	end
 end
 

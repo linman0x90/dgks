@@ -230,7 +230,7 @@ end
 
 -- Formatting ------------------------------------------------------------------------------------
 
-local KIND_COLORS = { K = "ff40ff40", D = "ffff4040", W = "ffa0ffa0", L = "ffffa040" }
+local KIND_COLORS = { K = "ff40ff40", D = "ffff4040", W = "ffa0ffa0", L = "ffffa040", X = "ff60c0ff" }
 
 local function kindText(kind)
 	return ("|c%s%s|r"):format(KIND_COLORS[kind] or "ffffffff", H.KIND_NAMES[kind] or "?")
@@ -291,6 +291,13 @@ local function opponentText(rec, name)
 	return text
 end
 
+-- For guild views: whose record this is and what it counts as. A team kill (X) counts as a kill
+-- by the member who landed it, not by whoever saw it.
+local function memberOf(rec)
+	if rec.k == "X" then return H.ShortName(rec.kn), rec.kc, "K" end
+	return H.ShortName(rec.a), rec.c, rec.k
+end
+
 local function recordTip(rec)
 	return function(tt)
 		tt:AddLine(("%s: %s"):format(H.KIND_NAMES[rec.k] or "?", H.ShortName(rec.o)))
@@ -298,11 +305,17 @@ local function recordTip(rec)
 		if rec.oc or rec.orc or rec.ol or rec.os then
 			tt:AddDoubleLine("Opponent", classColored(describe(rec.ol, rec.orc, rec.oc, rec.os), rec.oc), 1, 1, 1, 1, 1, 1)
 		end
+		if rec.k == "X" and rec.kn then
+			local killer = H.ShortName(rec.kn)
+			local detail = classSpec(rec.kc, rec.ks)
+			if detail ~= "" then killer = killer .. ", " .. detail end
+			tt:AddDoubleLine("Killing blow", classColored(killer, rec.kc), 1, 1, 1, 1, 1, 1)
+		end
 		if rec.a then
 			local who = H.ShortName(rec.a)
 			local detail = describe(rec.l, nil, rec.c, rec.cs)
 			if detail ~= "" then who = who .. ", " .. detail end
-			tt:AddDoubleLine("Player", classColored(who, rec.c), 1, 1, 1, 1, 1, 1)
+			tt:AddDoubleLine(rec.k == "X" and "Seen by" or "Player", classColored(who, rec.c), 1, 1, 1, 1, 1, 1)
 		end
 		local place = location(rec)
 		if place ~= "" then tt:AddDoubleLine("Location", place, 1, 1, 1, 1, 1, 1) end
@@ -327,8 +340,8 @@ end
 local PERIODS = { [86400] = "Last 24 hours", [604800] = "Last 7 days", [2592000] = "Last 30 days",
 	[7776000] = "Last 90 days", [0] = "All time" }
 local PERIOD_ORDER = { 86400, 604800, 2592000, 7776000, 0 }
-local KIND_FILTERS = { all = "All", K = "Kills", D = "Deaths", duel = "Duels" }
-local KIND_ORDER = { "all", "K", "D", "duel" }
+local KIND_FILTERS = { all = "All", K = "Kills", D = "Deaths", duel = "Duels", X = "Team kills" }
+local KIND_ORDER = { "all", "K", "D", "duel", "X" }
 
 local ui = {
 	tab = "mine",
@@ -380,9 +393,10 @@ local TABS = {
 			for _, rec in ipairs(H:PersonalRecords()) do
 				local opp = H.ShortName(rec.o)
 				local cls, place = classSpec(rec.oc, rec.os), location(rec)
-				if passes(rec, { opp, rec.z, rec.sz, cls }) then
+				if passes(rec, { opp, rec.z, rec.sz, cls, rec.kn }) then
 					rows[#rows + 1] = {
-						cells = { when(rec.t), kindText(rec.k), opponentText(rec, opp), classColored(cls, rec.oc), place, rec.st and tostring(rec.st) or "" },
+						cells = { when(rec.t), kindText(rec.k), opponentText(rec, opp) .. (rec.kn and (" |cff9d9d9d(by " .. H.ShortName(rec.kn) .. ")|r") or ""),
+							classColored(cls, rec.oc), place, rec.st and tostring(rec.st) or "" },
 						sort = { rec.t, rec.k, opp:lower(), cls, place:lower(), rec.st or 0 },
 						tip = recordTip(rec),
 					}
@@ -403,11 +417,12 @@ local TABS = {
 		rows = function()
 			local rows = {}
 			for _, rec in ipairs(H:GuildRecords()) do
-				local member, opp = H.ShortName(rec.a), H.ShortName(rec.o)
+				local member, memberClass = memberOf(rec)
+				local opp = H.ShortName(rec.o)
 				local cls, place = classSpec(rec.oc, rec.os), location(rec)
 				if passes(rec, { member, opp, rec.z, rec.sz, cls }) then
 					rows[#rows + 1] = {
-						cells = { when(rec.t), classColored(member, rec.c), kindText(rec.k), opponentText(rec, opp), classColored(cls, rec.oc), place },
+						cells = { when(rec.t), classColored(member, memberClass), kindText(rec.k), opponentText(rec, opp), classColored(cls, rec.oc), place },
 						sort = { rec.t, member:lower(), rec.k, opp:lower(), cls, place:lower() },
 						tip = recordTip(rec),
 					}
@@ -430,7 +445,7 @@ local TABS = {
 			local byName, list = {}, {}
 			for _, rec in ipairs(H:PersonalRecords()) do
 				local opp = H.ShortName(rec.o)
-				if not H.IsUnknown(rec) and passes(rec, { opp }, true) then
+				if rec.k ~= "X" and not H.IsUnknown(rec) and passes(rec, { opp }, true) then
 					local o = byName[opp]
 					if not o then
 						o = { name = opp, K = 0, D = 0, W = 0, L = 0, last = 0 }
@@ -469,7 +484,8 @@ local TABS = {
 			local byKey, list = {}, {}
 			for _, rec in ipairs(H:GuildRecords()) do
 				local key = H.OpponentKey(rec)
-				local opp, member = H.ShortName(key), H.ShortName(rec.a)
+				local member, memberClass, kind = memberOf(rec)
+				local opp = H.ShortName(key)
 				-- Search matches the opponent or a member, so "Zed" or "Bob" both narrow the list
 				if key and not H.IsUnknown(rec) and passes(rec, { opp, member }, true) then
 					local o = byKey[key]
@@ -478,17 +494,17 @@ local TABS = {
 						byKey[key] = o
 						list[#list + 1] = o
 					end
-					o[rec.k] = o[rec.k] + 1
+					o[kind] = o[kind] + 1
 					if rec.t >= o.last then o.last = rec.t end
 					if rec.oc then o.class = rec.oc end
 					if rec.os then o.spec = rec.os end
 					local m = o.members[member]
 					if not m then
-						m = { name = member, class = rec.c, K = 0, D = 0, W = 0, L = 0 }
+						m = { name = member, class = memberClass, K = 0, D = 0, W = 0, L = 0 }
 						o.members[member] = m
 						o.memberCount = o.memberCount + 1
 					end
-					m[rec.k] = m[rec.k] + 1
+					m[kind] = m[kind] + 1
 				end
 			end
 			local rows = {}
@@ -544,7 +560,7 @@ local TABS = {
 		rows = function()
 			local byName, list = {}, {}
 			for _, rec in ipairs(H:GuildRecords()) do
-				local member = H.ShortName(rec.a)
+				local member, memberClass, kind = memberOf(rec)
 				if passes(rec, { member }, true) then
 					local m = byName[member]
 					if not m then
@@ -552,9 +568,9 @@ local TABS = {
 						byName[member] = m
 						list[#list + 1] = m
 					end
-					m[rec.k] = m[rec.k] + 1
-					if rec.c then m.class = rec.c end
-					if rec.k == "K" then
+					m[kind] = m[kind] + 1
+					if memberClass then m.class = memberClass end
+					if kind == "K" then
 						if rec.t > m.last then m.last = rec.t end
 						if (rec.st or 0) > m.best then m.best = rec.st end
 					end
@@ -892,6 +908,15 @@ function H:SettingsArgs(base)
 			desc = "On retail the Death Recap sometimes cannot name your killer. Record an enemy player who was targeting you when you died instead, marked \"likely\". Right in a 1v1, a guess in group fights.",
 			get = function() return dgks.db.profile.guessKiller end,
 			set = function(_, v) dgks.db.profile.guessKiller = v end,
+		},
+		historyTeamKills = {
+			type = "toggle",
+			order = base + 44.75,
+			width = "full",
+			name = "Record teammates' killing blows",
+			desc = "Record kills by party and raid members on other players (in battlegrounds, for example) as team kills. Team kills by guild members are shared with the guild and count as their kills there; they never count toward your own stats.",
+			get = function() return dgks.db.profile.recordTeamKills end,
+			set = function(_, v) dgks.db.profile.recordTeamKills = v end,
 		},
 		historyInspect = {
 			type = "toggle",

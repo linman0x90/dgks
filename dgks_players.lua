@@ -110,8 +110,8 @@ end
 function P:Note(unit)
 	if type(unit) ~= "string" then return end
 	if readable(UnitExists, unit) ~= true or readable(UnitIsPlayer, unit) ~= true then return end
-	if readable(UnitIsUnit, unit, "player") == true then return end
 	local guid = str(readable(UnitGUID, unit))
+	if guid and guid == UnitGUID("player") then return end
 	local name, realm = readable(UnitFullName, unit)
 	name, realm = str(name), str(realm)
 	if not guid or not name then return end

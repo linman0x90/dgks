@@ -50,6 +50,18 @@ local function isSecret(v)
 	return issecretvalue ~= nil and issecretvalue(v) == true
 end
 
+-- Is this GUID one of our party or raid members (not us)?
+local function isGroupMember(guid)
+	if type(guid) ~= "string" or isSecret(guid) then return false end
+	local prefix, count = "party", 4
+	if IsInRaid and IsInRaid() then prefix, count = "raid", 40 end
+	for i = 1, count do
+		local g = UnitGUID(prefix .. i)
+		if g ~= nil and not isSecret(g) and g == guid then return true end
+	end
+	return false
+end
+
 dgks = LibStub("AceAddon-3.0"):NewAddon("dgks", "AceEvent-3.0", "AceConsole-3.0", "LibSink-2.0","AceComm-3.0","AceSerializer-3.0")
 
 -- Overview tab of the dG KillShot window: record and streak tiles, Top 5 lists
@@ -1059,6 +1071,7 @@ local defaults = {
 		guessKiller = true, -- When the Death Recap cannot name the killer, record the likely one
 		deathRecap = true, -- Open the death recap window when we die (dgks_deathrecap.lua)
 		inspectSpecs = true, -- Inspect nearby enemy players to learn their spec (dgks_players.lua)
+		recordTeamKills = true, -- Record party and raid members' killing blows on players (team kills)
 	},
 }
 
@@ -1178,6 +1191,10 @@ function dgks:CombatLogEventHandler(info, timestamp, event, hideCaster, sourceGU
 				
 				-- The player has landed a killshot
 				self:KillshotTX(destName, timestamp, destGUID)
+			elseif bit.band(destFlags, COMBATLOG_OBJECT_TYPE_PLAYER) == COMBATLOG_OBJECT_TYPE_PLAYER
+				and isGroupMember(sourceGUID) and not isGroupMember(destGUID) then
+				-- A party or raid member landed the killing blow on another player: a team kill
+				dgks.History:RecordTeamKill(sourceGUID, destGUID)
 			end
 		end
 	end
@@ -1938,6 +1955,10 @@ if classic then
 				--@end-debug@
 				dgks:KillshotTX(vName, timestamp, targetGUID)
 			end
+		elseif attackerGUID ~= playerGUID and dgks:TargetCheck(targetGUID)
+			and isGroupMember(attackerGUID) and not isGroupMember(targetGUID) then
+			-- A party or raid member landed the killing blow on another player: a team kill
+			dgks.History:RecordTeamKill(attackerGUID, targetGUID)
 		end --if attackerGUID
 	end
 	-- Likely killer, for deaths the Death Recap cannot name: an enemy player who is targeting us when
@@ -1961,7 +1982,10 @@ if classic then
 		if readable(UnitExists, unit) ~= true then return nil end
 		if readable(UnitIsPlayer, unit) ~= true then return nil end
 		if readable(UnitCanAttack, "player", unit) ~= true then return nil end
-		if readable(UnitIsUnit, unit .. "target", "player") ~= true then return nil end
+		-- Is their target us? Compare GUIDs: UnitIsUnit on a compound token ("nameplate3target") always
+		-- returns a secret on retail, while UnitGUID stays readable along a chain of player-controlled units.
+		local targetGUID = readable(UnitGUID, unit .. "target")
+		if type(targetGUID) ~= "string" or targetGUID ~= UnitGUID("player") then return nil end
 		local ok, name, realm = pcall(UnitFullName, unit)
 		if not ok or isSecret(name) or type(name) ~= "string" or name == "" then return nil end
 		if isSecret(realm) or type(realm) ~= "string" or realm == "" then realm = GetNormalizedRealmName() end
