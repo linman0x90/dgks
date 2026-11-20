@@ -142,6 +142,9 @@ local FIELDS = {
 	st = { "number", { 0, 1e6 } }, -- killing streak after this record
 	mk = { "number", { 0, 100 } }, -- multikill level
 	lg = { "number", { 1, 1 } }, -- imported from the old kill/death lists (personal only)
+	u = { "number", { 1, 1 } },  -- the killer is not known; o says why ("Hidden by the game", ...)
+	g = { "number", { 1, 1 } },  -- the killer is a guess: an enemy player targeting us when we died
+	gn = { "number", { 1, 40 } }, -- how many enemy players were targeting us then
 }
 local REQUIRED = { a = true, e = true, s = true, t = true, k = true, o = true }
 
@@ -263,17 +266,27 @@ local function opponentInfo(rec, guid)
 	end
 end
 
+-- Killer names written by older versions when the killer was not known
+local LEGACY_UNKNOWN = { ["Unknown because of retail"] = true, ["Unknown Entity"] = true }
+
+-- Is this record's opponent unknown (a reason rather than a name)?
+function H.IsUnknown(rec)
+	return rec.u ~= nil or LEGACY_UNKNOWN[rec.o] == true
+end
+
 -- Record something that happened to us. kind: K, D, W or L. opponent: the other player's name.
 -- guid: the opponent's GUID when known. streak/multikill: the counters after this event.
+-- flags (optional): { unknown = true } when opponent is a reason, not a name;
+-- { guessed = n } when opponent is a guess made from n enemy players targeting us.
 -- Called from the kill and death handlers, so a failure here must never reach them.
-function H:Record(kind, opponent, guid, streak, multikill)
-	local ok, err = pcall(H.RecordUnsafe, H, kind, opponent, guid, streak, multikill)
+function H:Record(kind, opponent, guid, streak, multikill, flags)
+	local ok, err = pcall(H.RecordUnsafe, H, kind, opponent, guid, streak, multikill, flags)
 	--@debug@
 	if not ok then dgks:Print("DEBUG: History record failed: " .. tostring(err)) end
 	--@end-debug@
 end
 
-function H:RecordUnsafe(kind, opponent, guid, streak, multikill)
+function H:RecordUnsafe(kind, opponent, guid, streak, multikill, flags)
 	if not KINDS[kind] or not usable(opponent, "string") or opponent == "" then return end
 	if not myName then H:UpdateIdentity() end
 	if not myName then return end
@@ -296,6 +309,11 @@ function H:RecordUnsafe(kind, opponent, guid, streak, multikill)
 	if usable(instanceType, "string") then rec.i = instanceType end
 	if usable(streak, "number") then rec.st = streak end
 	if usable(multikill, "number") and multikill > 0 then rec.mk = multikill end
+	if LEGACY_UNKNOWN[rec.o] or (flags and flags.unknown) then rec.u = 1 end
+	if flags and type(flags.guessed) == "number" then
+		rec.g = 1
+		rec.gn = math.max(1, math.min(40, math.floor(flags.guessed)))
+	end
 
 	-- Shared records get a place in our stream
 	local store = dgks.db.profile.historyShare and guildStore(true)
@@ -575,7 +593,7 @@ end
 
 local function buildCounts(records, into)
 	for _, rec in ipairs(records) do
-		if rec.k == "K" or rec.k == "D" then
+		if (rec.k == "K" or rec.k == "D") and not H.IsUnknown(rec) then
 			local key = H.PlayerKey(rec.o, authorRealm(rec))
 			if key then
 				local c = into[key]

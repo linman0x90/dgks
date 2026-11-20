@@ -253,6 +253,14 @@ local function when(t)
 	return date("%Y-%m-%d %H:%M", t)
 end
 
+-- The opponent cell: grey for an unknown killer, "(likely)" after a guessed one
+local function opponentText(rec, name)
+	if H.IsUnknown(rec) then return "|cff9d9d9d" .. name .. "|r" end
+	local text = classColored(name, rec.oc)
+	if rec.g then text = text .. " |cff9d9d9d(likely)|r" end
+	return text
+end
+
 local function recordTip(rec)
 	return function(tt)
 		tt:AddLine(("%s: %s"):format(H.KIND_NAMES[rec.k] or "?", H.ShortName(rec.o)))
@@ -275,6 +283,12 @@ local function recordTip(rec)
 		if rec.st and rec.st > 0 then tt:AddDoubleLine("Streak", tostring(rec.st), 1, 1, 1, 1, 1, 1) end
 		if rec.mk then tt:AddDoubleLine("Multikill", tostring(rec.mk + 1) .. " kills", 1, 1, 1, 1, 1, 1) end
 		if rec.lg then tt:AddLine("Imported from the old kill and death lists", 0.6, 0.6, 0.6) end
+		if H.IsUnknown(rec) then
+			tt:AddLine("The game did not say who the killer was.", 0.6, 0.6, 0.6, true)
+		elseif rec.g then
+			local others = (rec.gn or 1) > 1 and (" (one of %d enemies targeting you)"):format(rec.gn) or ""
+			tt:AddLine("Likely killer: targeting you when you died" .. others .. ". The game did not name the killer.", 0.6, 0.6, 0.6, true)
+		end
 	end
 end
 
@@ -337,7 +351,7 @@ local TABS = {
 				local opp = H.ShortName(rec.o)
 				if passes(rec, { opp, rec.z, rec.sz }) then
 					rows[#rows + 1] = {
-						cells = { when(rec.t), kindText(rec.k), classColored(opp, rec.oc), className(rec.oc), rec.z or "", rec.st and tostring(rec.st) or "" },
+						cells = { when(rec.t), kindText(rec.k), opponentText(rec, opp), className(rec.oc), rec.z or "", rec.st and tostring(rec.st) or "" },
 						sort = { rec.t, rec.k, opp:lower(), className(rec.oc), (rec.z or ""):lower(), rec.st or 0 },
 						tip = recordTip(rec),
 					}
@@ -360,7 +374,7 @@ local TABS = {
 				local member, opp = H.ShortName(rec.a), H.ShortName(rec.o)
 				if passes(rec, { member, opp, rec.z, rec.sz }) then
 					rows[#rows + 1] = {
-						cells = { when(rec.t), classColored(member, rec.c), kindText(rec.k), classColored(opp, rec.oc), rec.z or "" },
+						cells = { when(rec.t), classColored(member, rec.c), kindText(rec.k), opponentText(rec, opp), rec.z or "" },
 						sort = { rec.t, member:lower(), rec.k, opp:lower(), (rec.z or ""):lower() },
 						tip = recordTip(rec),
 					}
@@ -383,7 +397,7 @@ local TABS = {
 			local byName, list = {}, {}
 			for _, rec in ipairs(H:PersonalRecords()) do
 				local opp = H.ShortName(rec.o)
-				if passes(rec, { opp }, true) then
+				if not H.IsUnknown(rec) and passes(rec, { opp }, true) then
 					local o = byName[opp]
 					if not o then
 						o = { name = opp, K = 0, D = 0, W = 0, L = 0, last = 0 }
@@ -423,7 +437,7 @@ local TABS = {
 				local key = H.OpponentKey(rec)
 				local opp, member = H.ShortName(key), H.ShortName(rec.a)
 				-- Search matches the opponent or a member, so "Zed" or "Bob" both narrow the list
-				if key and passes(rec, { opp, member }, true) then
+				if key and not H.IsUnknown(rec) and passes(rec, { opp, member }, true) then
 					local o = byKey[key]
 					if not o then
 						o = { name = opp, K = 0, D = 0, W = 0, L = 0, last = 0, members = {}, memberCount = 0 }
@@ -665,7 +679,7 @@ end
 local function top(kind, n)
 	local byName, list = {}, {}
 	for _, rec in ipairs(H:PersonalRecords()) do
-		if rec.k == kind then
+		if rec.k == kind and not H.IsUnknown(rec) then
 			local name = H.ShortName(rec.o)
 			local o = byName[name]
 			if not o then
@@ -770,6 +784,15 @@ function H:MainOptionArgs(base)
 			desc = "When you mouse over a player, show how often you and your guild have killed them and been killed by them.",
 			get = function() return dgks.db.profile.historyTooltip end,
 			set = function(_, v) dgks.db.profile.historyTooltip = v end,
+		},
+		historyGuess = {
+			type = "toggle",
+			order = base + 44.7,
+			width = "full",
+			name = "Record the likely killer when the game hides it",
+			desc = "On retail the Death Recap sometimes cannot name your killer. Record an enemy player who was targeting you when you died instead, marked \"likely\". Right in a 1v1, a guess in group fights.",
+			get = function() return dgks.db.profile.guessKiller end,
+			set = function(_, v) dgks.db.profile.guessKiller = v end,
 		},
 		historyRetention = {
 			type = "range",

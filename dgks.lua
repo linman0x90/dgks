@@ -1380,6 +1380,7 @@ local defaults = {
 		historyRetentionDays = 90, -- Guild history older than this is pruned; personal history is kept
 		historyTooltip = true, -- Show kill and death counts when mousing over a player
 		minimap = { hide = false, angle = 200 }, -- Minimap button (dgks_minimap.lua)
+		guessKiller = true, -- When the Death Recap cannot name the killer, record the likely one
 	},
 }
 
@@ -1432,6 +1433,10 @@ function dgks:OnInitialize()
 	SlashCmdList.DGKS = function(msg)
 		if type(msg) == "string" and msg:lower():match("^%s*history") then
 			dgks.History:ToggleWindow()
+			return
+		end
+		if type(msg) == "string" and msg:lower():match("^%s*recap") then
+			dgks:DumpRecap()
 			return
 		end
 		dgks:OpenOptions()
@@ -1798,7 +1803,9 @@ function dgks:ProcessKillshot(cchan, rxkiller, rxvictim, rxtimestamp, rxstreak, 
 	end
 end
 
-function dgks:PlayerDeath(myKiller)
+-- flags: nil, { unknown = true } (myKiller is a reason, not a name) or { guessed = n } (a likely
+-- killer out of n candidates). guid: the killer's GUID when known.
+function dgks:PlayerDeath(myKiller, flags, guid)
 	streak = 0;
 	deathstreak = deathstreak + 1;
 	if (deathstreak > dgks.db.profile.maxdeathstreak) then dgks.db.profile.maxdeathstreak = deathstreak end
@@ -1811,37 +1818,112 @@ function dgks:PlayerDeath(myKiller)
 	-- If deathList doesn't exist create it
 	if not dgks.db.profile.deathList[myKiller] then dgks.db.profile.deathList[myKiller] = {} end
 	tinsert(dgks.db.profile.deathList[myKiller], date("%m/%d/%y %H:%M:%S"))
-	if (dgks.db.profile.dochatbox) then dgks:Print("You been murdered by "..myKiller.." "..#dgks.db.profile.deathList[myKiller].." times.") end
-	dgks.History:Record("D", myKiller)
+	if (dgks.db.profile.dochatbox) then
+		if flags and flags.unknown then
+			dgks:Print("You died. Killer unknown: " .. myKiller .. ".")
+		elseif flags and flags.guessed then
+			dgks:Print("You were likely killed by " .. myKiller .. ".")
+		else
+			dgks:Print("You been murdered by "..myKiller.." "..#dgks.db.profile.deathList[myKiller].." times.")
+		end
+	end
+	dgks.History:Record("D", myKiller, guid, nil, nil, flags)
 	if dgks.db.profile.doscreenshotondeath then Screenshot() end
 end
 
--- Returns the name of whoever killed the player according to Blizzard's Death Recap, or nil if the
--- recap is empty/unavailable or the name is a secret value (which cannot be stored or compared).
--- Prefers the event flagged as the killing blow (overkill >= 0), otherwise the most recent event.
+-- Who killed the player, according to Blizzard's Death Recap (the only source on retail/Forever,
+-- where the combat log is closed to addons). Read it the way Blizzard's own Death Recap frame does:
+-- the first event is the one that caused the death, and its caster is hidden when hideCaster is set.
+-- Returns name, reason. reason is one of:
+--   "found"        name is the killer
+--   "pending"      no recap yet; it may still be filled in, so try again shortly
+--   "unavailable"  this client has no Death Recap
+--   "secret"       the game hides the killer from addons here (dungeons, raids, PvP matches...)
+--   "hidden"       the killing blow has no visible caster
+--   "environment"  no attacker at all: falling, drowning, lava and the like
 function dgks:GetRecapKiller()
-	if not (C_DeathRecap and C_DeathRecap.GetRecapEvents) then return nil end
-	local ok, events = pcall(C_DeathRecap.GetRecapEvents)
-	if not ok or type(events) ~= "table" or #events == 0 then return nil end
-
-	local function usable(v, wantType)
-		return type(v) == wantType and not isSecret(v)
+	if not (C_DeathRecap and C_DeathRecap.GetRecapEvents) then return nil, "unavailable" end
+	if C_DeathRecap.HasRecapEvents then
+		local ok, has = pcall(C_DeathRecap.HasRecapEvents)
+		if ok and not isSecret(has) and has == false then return nil, "pending" end
 	end
+	local ok, events = pcall(C_DeathRecap.GetRecapEvents)
+	if not ok or events == nil then return nil, "pending" end
+	if isSecret(events) then return nil, "secret" end
+	if type(events) ~= "table" then return nil, "pending" end
+	local ev = events[1]
+	if ev == nil then return nil, "pending" end
+	if isSecret(ev) then return nil, "secret" end
+	if type(ev) ~= "table" then return nil, "pending" end
 
-	local best, bestTime
-	for i, ev in ipairs(events) do
-		if type(ev) == "table" then
-			local overkill = usable(ev.overkill, "number") and ev.overkill or -1
-			if overkill >= 0 then best = ev break end
-			local t = usable(ev.timestamp, "number") and ev.timestamp or i
-			if not bestTime or t >= bestTime then best, bestTime = ev, t end
+	local hide = ev.hideCaster
+	if isSecret(hide) then return nil, "secret" end
+	if hide == true then return nil, "hidden" end
+
+	local name = ev.sourceName
+	if isSecret(name) then return nil, "secret" end
+	if type(name) == "string" and name ~= "" then return name, "found" end
+	return nil, "environment"
+end
+
+-- What to record as the killer when the recap does not name one. History marks these as unknown,
+-- so they stay out of Top predators and the opponent lists.
+dgks.UNKNOWN_KILLER_TEXT = {
+	pending = "No death recap",
+	unavailable = "No death recap",
+	secret = "Hidden by the game",
+	hidden = "Hidden attacker",
+	environment = "Environment",
+}
+
+-- /dgks recap: print the raw Death Recap of the last death, to see what the game gives addons here.
+-- Hidden (secret) values are reported as such, never compared or stored.
+function dgks:DumpRecap()
+	local function show(v)
+		if isSecret(v) then return "<hidden by the game>" end
+		if type(v) == "string" then return '"' .. v .. '"' end
+		return tostring(v)
+	end
+	local _, instanceType = IsInInstance()
+	self:Print(("Death Recap - zone: %s, instance type: %s"):format(show(GetRealZoneText()), show(instanceType)))
+	if not (C_DeathRecap and C_DeathRecap.GetRecapEvents) then
+		self:Print("This client has no Death Recap API.")
+		return
+	end
+	if C_DeathRecap.HasRecapEvents then
+		local ok, has = pcall(C_DeathRecap.HasRecapEvents)
+		self:Print("HasRecapEvents: " .. (ok and show(has) or ("error: " .. tostring(has))))
+	end
+	local ok, events = pcall(C_DeathRecap.GetRecapEvents)
+	if not ok then
+		self:Print("GetRecapEvents error: " .. tostring(events))
+		return
+	end
+	if isSecret(events) or type(events) ~= "table" then
+		self:Print("GetRecapEvents returned " .. show(events))
+		return
+	end
+	local count = 0
+	for i = 1, 10 do
+		local ev = events[i]
+		if ev == nil then break end
+		count = i
+		if isSecret(ev) or type(ev) ~= "table" then
+			self:Print(("Event %d: %s"):format(i, show(ev)))
+		else
+			local keys = {}
+			for k in pairs(ev) do
+				if not isSecret(k) and type(k) == "string" then keys[#keys + 1] = k end
+			end
+			table.sort(keys)
+			local parts = {}
+			for _, k in ipairs(keys) do parts[#parts + 1] = k .. "=" .. show(ev[k]) end
+			self:Print(("Event %d%s: %s"):format(i, i == 1 and " (caused death)" or "", table.concat(parts, ", ")))
 		end
 	end
-	if not best then return nil end
-	if usable(best.sourceName, "string") and best.sourceName ~= "" then
-		return best.sourceName
-	end
-	return nil
+	if count == 0 then self:Print("No recap events (no death yet this session, or nothing recorded).") end
+	local killer, reason = self:GetRecapKiller()
+	self:Print(("dgks reads this as: %s (%s)"):format(killer or dgks.UNKNOWN_KILLER_TEXT[reason] or "?", reason))
 end
 
 function dgks:GetKillshotSound(streak)
@@ -2167,6 +2249,70 @@ if classic then
 			end
 		end --if attackerGUID
 	end
+	-- Likely killer, for deaths the Death Recap cannot name: an enemy player who is targeting us when
+	-- we die, or who switched their target to us in the last few seconds. Right in a 1v1, a guess in
+	-- a group fight. Where the game hides unit comparisons (dungeons, raids) nothing is found.
+	local recentTargeters = {} -- [Name-Realm] = { t = GetTime(), guid = guid }
+	local GUESS_WINDOW = 8 -- seconds
+	local guessUnits = { "target", "focus", "mouseover", "softenemy" }
+	for i = 1, 40 do guessUnits[#guessUnits + 1] = "nameplate" .. i end
+	for i = 1, 5 do guessUnits[#guessUnits + 1] = "arena" .. i end
+
+	-- Calls fn and returns its first result, or nil if it failed or is hidden from addons
+	local function readable(fn, ...)
+		local ok, v = pcall(fn, ...)
+		if not ok or isSecret(v) then return nil end
+		return v
+	end
+
+	-- If unit is an enemy player whose target is us, returns their "Name-Realm" and GUID
+	local function enemyTargetingMe(unit)
+		if readable(UnitExists, unit) ~= true then return nil end
+		if readable(UnitIsPlayer, unit) ~= true then return nil end
+		if readable(UnitCanAttack, "player", unit) ~= true then return nil end
+		if readable(UnitIsUnit, unit .. "target", "player") ~= true then return nil end
+		local ok, name, realm = pcall(UnitFullName, unit)
+		if not ok or isSecret(name) or type(name) ~= "string" or name == "" then return nil end
+		if isSecret(realm) or type(realm) ~= "string" or realm == "" then realm = GetNormalizedRealmName() end
+		local guid = readable(UnitGUID, unit)
+		return name .. "-" .. realm, (type(guid) == "string") and guid or nil
+	end
+
+	function events:UNIT_TARGET(unit)
+		if not dgks.db.profile.guessKiller or isSecret(unit) or type(unit) ~= "string" then return end
+		local name, guid = enemyTargetingMe(unit)
+		if name then recentTargeters[name] = { t = GetTime(), guid = guid } end
+	end
+
+	-- Returns the likely killer's name, GUID and how many enemies were candidates, or nil
+	local function guessKiller()
+		local now, found, count = GetTime(), {}, 0
+		for _, unit in ipairs(guessUnits) do
+			local name, guid = enemyTargetingMe(unit)
+			if name and not found[name] then
+				local seen = recentTargeters[name]
+				found[name] = { guid = guid, t = seen and seen.t or 0, current = true }
+				count = count + 1
+			end
+		end
+		for name, seen in pairs(recentTargeters) do
+			if not found[name] and now - seen.t <= GUESS_WINDOW then
+				found[name] = { guid = seen.guid, t = seen.t, current = false }
+				count = count + 1
+			end
+		end
+		wipe(recentTargeters)
+		-- Prefer someone still targeting us; among those, whoever turned to us last
+		local bestName, best
+		for name, c in pairs(found) do
+			if not best or (c.current and not best.current) or (c.current == best.current and c.t > best.t) then
+				bestName, best = name, c
+			end
+		end
+		if not best then return nil end
+		return bestName, best.guid, count
+	end
+
 	local deathPending = false
 	function events:PLAYER_DEAD()
 		-- We have died. PLAYER_DEAD fires once per death and carries nothing to compare, so it also works
@@ -2176,15 +2322,28 @@ if classic then
 		if deathPending then return end
 		deathPending = true
 		streak = 0
+		-- Look for a likely killer now, while the enemies around us still have us targeted
+		local guessName, guessGUID, guessCount
+		if dgks.db.profile.guessKiller then
+			local ok, n, g, c = pcall(guessKiller)
+			if ok then guessName, guessGUID, guessCount = n, g, c end
+		end
 		local attempts = 0
 		local function resolveKiller()
 			attempts = attempts + 1
 			-- A failing lookup must not leave deathPending set, or later deaths would be ignored
-			local ok, killer = pcall(dgks.GetRecapKiller, dgks)
-			if not ok then killer = nil end
-			if killer or attempts >= 4 then
+			local ok, killer, reason = pcall(dgks.GetRecapKiller, dgks)
+			if not ok then killer, reason = nil, "pending" end
+			-- Only an empty recap is worth waiting for; give it up to 5 seconds
+			if reason ~= "pending" or attempts >= 10 then
 				deathPending = false
-				dgks:PlayerDeath(killer or "Unknown because of retail")
+				if killer then
+					dgks:PlayerDeath(killer)
+				elseif guessName and reason ~= "environment" then
+					dgks:PlayerDeath(guessName, { guessed = guessCount }, guessGUID)
+				else
+					dgks:PlayerDeath(dgks.UNKNOWN_KILLER_TEXT[reason] or "No death recap", { unknown = true })
+				end
 			else
 				C_Timer.After(0.5, resolveKiller)
 			end
