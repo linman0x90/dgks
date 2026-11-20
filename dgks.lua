@@ -134,6 +134,18 @@ local function giveGeneral()
 		name = "General",
 		handler = dgks,
 		args = {
+			minimapButton = {
+				type = 'toggle',
+				name = 'Show minimap button',
+				desc = 'Left-click the button to open your history, right-click to open these options. Drag it to move it around the minimap.',
+				get = function() return not dgks.db.profile.minimap.hide end,
+				set = function(info, v)
+					dgks.db.profile.minimap.hide = not v
+					dgks:UpdateMinimapButton()
+				end,
+				order = 1,
+				width = "full"
+			},
 			style = {
 				type = 'select',
 				name = 'Select how often to trigger killshots notifications:',
@@ -1367,6 +1379,7 @@ local defaults = {
 		historyShare = true, -- Share our kills and deaths with the guild history
 		historyRetentionDays = 90, -- Guild history older than this is pruned; personal history is kept
 		historyTooltip = true, -- Show kill and death counts when mousing over a player
+		minimap = { hide = false, angle = 200 }, -- Minimap button (dgks_minimap.lua)
 	},
 }
 
@@ -1421,8 +1434,9 @@ function dgks:OnInitialize()
 			dgks.History:ToggleWindow()
 			return
 		end
-		Settings.OpenToCategory(cat)
+		dgks:OpenOptions()
 	end
+	self.optionsCategory = cat
 
 	-- Setup Comms
 	self:RegisterComm("dgks") --Killshots
@@ -1432,6 +1446,16 @@ function dgks:OnInitialize()
 
 	-- Kill and death history (dgks_history.lua)
 	self.History:Initialize()
+end
+
+-- Open the dG KillShot options page
+function dgks:OpenOptions()
+	Settings.OpenToCategory(self.optionsCategory)
+end
+
+-- Current killing streak and death streak, for the minimap button tooltip
+function dgks:GetStreaks()
+	return streak, deathstreak
 end
 
 function dgks:SoundEventHandler(info, sound)
@@ -2264,6 +2288,7 @@ function dgks:OnEnable()
 	playerClass, _, playerRace, playerSex, _, playerName, _ = GetPlayerInfoByGUID(playerGUID)
 
 	self.History:Enable()
+	self:SetupMinimapButton()
 
 	--@debug@
 	dgks:Print("DEBUG:OnEnable:playerName: " .. playerName .. " playerGUID: " .. playerGUID)

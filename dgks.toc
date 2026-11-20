@@ -9,6 +9,10 @@
 ## X-Embeds: Ace3, LibSink-2.0
 ## X-Website: http://www.wowace.com
 ## X-Category: Interface Enhancements
+## IconTexture: Interface\Icons\INV_Misc_Bone_HumanSkull_01
+## AddonCompartmentFunc: dgks_OnAddonCompartmentClick
+## AddonCompartmentFuncOnEnter: dgks_OnAddonCompartmentEnter
+## AddonCompartmentFuncOnLeave: dgks_OnAddonCompartmentLeave
 ## X-Curse-Project-ID: 14980
 
 #@no-lib-strip@
@@ -28,3 +32,4 @@ dgks_emotes.lua [AllowLoadGameType classic, vanilla, tbc, cata, mists]
 dgks.lua
 dgks_history.lua
 dgks_history_ui.lua
+dgks_minimap.lua
