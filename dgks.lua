@@ -1875,6 +1875,18 @@ function dgks:GetKillshotSound(streak)
 	return dgks.db.profile.kssound[1];
 end
 
+-- Would LibSink route our text to Blizzard's floating combat text on a client with secret values?
+-- "Default" falls back to Blizzard's floating combat text unless SCT or MikSBT is installed.
+function dgks:SinkUsesBlizzardFCT()
+	if issecretvalue == nil then return false end -- No secret values on this client, so no taint problem
+	local output = dgks.db.profile.sink20OutputSink
+	if output == "Blizzard" then return true end
+	if output == nil or output == "Default" then
+		return not (_G.SCT or _G.MikSBT)
+	end
+	return false
+end
+
 function dgks:ScrollText(msg)
 	
 	tinsert(dgks.db.profile.killlog, 1, "[" .. date() .. "] " .. msg)
@@ -1892,9 +1904,19 @@ function dgks:ScrollText(msg)
 		--	dgks:Print("Setting Combat Scrolling Text for Self to enabled. Please /reload your UI or restart client.")
 		--	SetCVar("enableFloatingCombatText", 1)
 		--end
-		-- The selected output can raise an error (Blizzard's floating combat text does on 12.x-based
-		-- clients when fed from addon code). Never let that reach the player: show the line in the
-		-- error frame instead.
+		-- On clients with secret values, writing to Blizzard's floating combat text from addon code
+		-- taints its frame. Blizzard's own combat text (heals, damage) then runs tainted and errors on
+		-- every secret number it compares ("execution tainted by 'dgks'"), for the rest of the session.
+		-- A pcall cannot catch that, because the error happens later in Blizzard's code, so never
+		-- send our text there: use the error frame instead.
+		if dgks:SinkUsesBlizzardFCT() then
+			if UIErrorsFrame and UIErrorsFrame.AddMessage then
+				UIErrorsFrame:AddMessage(msg, 1.0, 0.1, 0.1, 1.0)
+			end
+			return
+		end
+		-- The selected output can still raise an error. Never let that reach the player: show the
+		-- line in the error frame instead.
 		local ok = pcall(dgks.Pour, dgks, msg, 1.0, 0.1, 0.1)
 		if not ok then
 			if UIErrorsFrame and UIErrorsFrame.AddMessage then
