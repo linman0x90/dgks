@@ -50,48 +50,6 @@ local function isSecret(v)
 	return issecretvalue ~= nil and issecretvalue(v) == true
 end
 
-local function sortListByLength(t,a,b)
-	local acount, bcount = 0,0
-	for _ in pairs(t[a]) do acount = acount + 1 end
-	for _ in pairs(t[b]) do bcount = bcount + 1 end
-	return acount > bcount
-end
-
-local function spairs(t, order)
-    -- collect the keys
-    local keys = {}
-    for k in pairs(t) do keys[#keys+1] = k end
-
-    -- if order function given, sort by it by passing the table and keys a, b,
-    -- otherwise just sort the keys 
-    if order then
-        table.sort(keys, function(a,b) return order(t, a, b) end)
-    else
-        table.sort(keys)
-    end
-
-    -- return the iterator function
-    local i = 0
-    return function()
-        i = i + 1
-        if keys[i] then
-            return keys[i], t[keys[i]]
-        end
-    end
-end
-
-local function getSortedList(mytable, count)
-	local tempString = ""
-	for i,v in spairs(mytable, function (t,a,b) return sortListByLength(t,a,b) end) do
-		tempString = tempString .. table.maxn(v) .. " " .. i .. " " .. v[table.maxn(v)] .. "\n"
-		if count ~= nil then
-			count = count - 1
-		end
-		if count == 0 then return tempString end
-	end
-	return tempString
-end
-
 dgks = LibStub("AceAddon-3.0"):NewAddon("dgks", "AceEvent-3.0", "AceConsole-3.0", "LibSink-2.0","AceComm-3.0","AceSerializer-3.0")
 
 local function giveOptions() 
@@ -104,35 +62,18 @@ local function giveOptions()
 		args = {
 			version = {
 				type = "description",
-				name = "Version " .. version,
+				name = "|cff9d9d9dVersion " .. version .. "|r\n",
 				order = 2
 			},
-			prey = {
-				type = "description",
-				name = "Top Prey:\n" .. getSortedList(dgks.db.profile.killList, 5),
-				order = 5
-			},
-			predators = {
-				type = "description",
-				name = "Top Predators:\n" .. getSortedList(dgks.db.profile.deathList, 5),
-				order = 10
-			},
-			killstreak = {
-				type = "description",
-				name = "Current killing streak: " .. streak .. "\nLongest killing streak: " .. dgks.db.profile.maxstreak .. "\n",
-				order = 12,
-				width = 1
-			},
-			deathstreak = {
-				type = "description",
-				name = "Current death streak: " .. deathstreak .. "\nLongest death streak: " .. dgks.db.profile.maxdeathstreak .. "\n",
-				order = 14,
-				width = 2
-			},
-			maxks = {
-				type = "description",
-				name = "Last 20 Kills\n" .. dgks.getKillLog(),
-				order = 15
+			-- The record tiles, Top 5 lists and history settings are added below from dgks_history_ui.lua
+			streak = dgks.History.Tile(15, "Kill streak", streak, "ff40ff40"),
+			maxstreak = dgks.History.Tile(16, "Best streak", dgks.db.profile.maxstreak, "ffffd100"),
+			deathstreak = dgks.History.Tile(17, "Death streak", deathstreak, "ffff4040"),
+			maxdeathstreak = dgks.History.Tile(18, "Worst streak", dgks.db.profile.maxdeathstreak, "ffff8040"),
+			resetHeader = {
+				type = "header",
+				name = "Reset",
+				order = 90
 			},
 			resetmaxks = {
 				type = 'execute',
@@ -148,7 +89,7 @@ local function giveOptions()
 					dgks.db.profile.deathList = dgks.db.defaults.profile.deathList
 				end,
 				width = "full",
-				order = 20
+				order = 91
 			},
 			resetdgks = {
 				type = 'execute',
@@ -160,7 +101,7 @@ local function giveOptions()
 					dgks.db:ResetProfile()
 				end,
 				width = "full",
-				order = 30
+				order = 92
 			},
 			--@debug@
 			-- Dev Debugging functions
@@ -181,6 +122,9 @@ local function giveOptions()
 			--@end-debug@
 		}
 	}
+	for key, option in pairs(dgks.History:MainOptionArgs(10)) do
+		options.args[key] = option
+	end
 	return options
 end
 
@@ -1422,6 +1366,7 @@ local defaults = {
 		sink20ScrollArea = "Outgoing",
 		historyShare = true, -- Share our kills and deaths with the guild history
 		historyRetentionDays = 90, -- Guild history older than this is pruned; personal history is kept
+		historyTooltip = true, -- Show kill and death counts when mousing over a player
 	},
 }
 

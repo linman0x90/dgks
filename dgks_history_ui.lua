@@ -554,84 +554,233 @@ end
 
 H.listeners.window = refreshRows
 
--- Options page ----------------------------------------------------------------------------------
+-- Main options page --------------------------------------------------------------------------
+-- The stats, Top 5 lists and history settings shown on the main "dG KillShot" page. dgks.lua merges
+-- these into its options table; the table is rebuilt every time the page is drawn.
 
-local function options()
+local GOLD, GREY, WHITE = "ffffd100", "ff9d9d9d", "ffffffff"
+local RANK_COLORS = { "ffffd100", "ffc7c7cf", "ffd9915a", "ffb0b0b0", "ffb0b0b0" } -- gold, silver, bronze
+
+local function c(color, text)
+	return ("|c%s%s|r"):format(color, text)
+end
+
+-- A stat tile: small grey label over a big number
+function H.Tile(order, label, value, color)
 	return {
-		type = "group",
-		name = "History",
-		args = {
-			status = {
-				type = "description",
-				order = 1,
-				name = function() return statusText() .. "\n" end,
-			},
-			open = {
-				type = "execute",
-				order = 2,
-				name = "Open history",
-				desc = "Open the history window. You can also type /dgks history.",
-				func = function() H:ToggleWindow() end,
-			},
-			share = {
-				type = "toggle",
-				order = 10,
-				width = "full",
-				name = "Share my kills and deaths with my guild",
-				desc = "Send your kills, deaths and duels to guild members running dG KillShot, and keep a copy of theirs. Turning this off also stops receiving guild history.",
-				get = function() return dgks.db.profile.historyShare end,
-				set = function(_, v)
-					dgks.db.profile.historyShare = v
-					if v then H:SyncNow() end
-				end,
-			},
-			retention = {
-				type = "range",
-				order = 11,
-				width = "double",
-				name = "Keep guild history for (days)",
-				desc = "Guild records older than this are deleted and not synced. Your personal history is always kept.",
-				min = 7, max = 365, step = 1, bigStep = 7,
-				get = function() return dgks.db.profile.historyRetentionDays end,
-				set = function(_, v)
-					dgks.db.profile.historyRetentionDays = v
-					H:Prune()
-					H:NotifyChanged()
-				end,
-			},
-			sync = {
-				type = "execute",
-				order = 20,
-				name = "Sync now",
-				desc = "Ask guild members for history you are missing.",
-				func = function() H:SyncNow() end,
-			},
-			clearGuild = {
-				type = "execute",
-				order = 30,
-				name = "Clear guild history",
-				desc = "Delete your copy of this guild's history. It is synced again from guild members.",
-				confirm = true,
-				confirmText = "Delete your copy of the guild history? It will be synced again from guild members.",
-				func = function() H:ClearGuild() end,
-			},
-			clearMine = {
-				type = "execute",
-				order = 31,
-				name = "Clear my history",
-				desc = "Delete this character's personal history. Records already shared with the guild stay there.",
-				confirm = true,
-				confirmText = "Delete this character's personal kill and death history? This cannot be undone.",
-				func = function()
-					wipe(dgks.db.char.history.records)
-					H:NotifyChanged()
-				end,
-			},
+		type = "description",
+		order = order,
+		width = 0.85,
+		fontSize = "large",
+		name = c(GREY, label) .. "\n" .. c(color or WHITE, tostring(value)) .. "\n",
+	}
+end
+
+-- Kills, deaths and duels of this character, from personal history
+local function totals()
+	local t = { K = 0, D = 0, W = 0, L = 0 }
+	for _, rec in ipairs(H:PersonalRecords()) do t[rec.k] = (t[rec.k] or 0) + 1 end
+	return t
+end
+
+-- The n opponents this character has the most records of the given kind against
+local function top(kind, n)
+	local byName, list = {}, {}
+	for _, rec in ipairs(H:PersonalRecords()) do
+		if rec.k == kind then
+			local name = H.ShortName(rec.o)
+			local o = byName[name]
+			if not o then
+				o = { name = name, count = 0, last = 0 }
+				byName[name] = o
+				list[#list + 1] = o
+			end
+			o.count = o.count + 1
+			if rec.oc then o.class = rec.oc end
+			if rec.t > o.last then o.last = rec.t end
+		end
+	end
+	table.sort(list, function(a, b)
+		if a.count ~= b.count then return a.count > b.count end
+		return a.last > b.last
+	end)
+	local out = {}
+	for i = 1, math.min(n, #list) do out[i] = list[i] end
+	return out
+end
+
+local function topList(title, kind, unit, countColor)
+	local lines = { c(GOLD, title), "" }
+	local entries = top(kind, 5)
+	if #entries == 0 then
+		lines[#lines + 1] = c(GREY, "Nothing recorded yet")
+	end
+	for i, o in ipairs(entries) do
+		lines[#lines + 1] = ("%s  %s  %s"):format(
+			c(RANK_COLORS[i], i .. "."),
+			classColored(o.name, o.class),
+			c(countColor, o.count .. " " .. (o.count == 1 and unit or unit .. "s")))
+	end
+	return table.concat(lines, "\n") .. "\n"
+end
+
+-- Option entries for the main page. order runs from base upward.
+function H:MainOptionArgs(base)
+	local t = totals()
+	local kd = t.K / math.max(t.D, 1)
+	return {
+		recordHeader = { type = "header", order = base, name = "Your record" },
+		kills = H.Tile(base + 1, "Kills", t.K, "ff40ff40"),
+		deaths = H.Tile(base + 2, "Deaths", t.D, "ffff4040"),
+		kd = H.Tile(base + 3, "K/D", ("%.2f"):format(kd), GOLD),
+		duels = H.Tile(base + 4, "Duels W-L", t.W .. "-" .. t.L, WHITE),
+
+		topHeader = { type = "header", order = base + 20, name = "Top 5" },
+		prey = {
+			type = "description",
+			order = base + 21,
+			width = 1.6,
+			fontSize = "medium",
+			name = function() return topList("Top prey", "K", "kill", "ff40ff40") end,
+		},
+		predators = {
+			type = "description",
+			order = base + 22,
+			width = 1.6,
+			fontSize = "medium",
+			name = function() return topList("Top predators", "D", "death", "ffff4040") end,
+		},
+
+		historyHeader = { type = "header", order = base + 40, name = "History" },
+		historyStatus = {
+			type = "description",
+			order = base + 41,
+			fontSize = "medium",
+			name = function() return statusText() .. "\n" end,
+		},
+		historyOpen = {
+			type = "execute",
+			order = base + 42,
+			name = "Open history",
+			desc = "Open the history window. You can also type /dgks history.",
+			func = function() H:ToggleWindow() end,
+		},
+		historySync = {
+			type = "execute",
+			order = base + 43,
+			name = "Sync now",
+			desc = "Ask guild members for history you are missing.",
+			func = function() H:SyncNow() end,
+		},
+		historyShare = {
+			type = "toggle",
+			order = base + 44,
+			width = "full",
+			name = "Share my kills and deaths with my guild",
+			desc = "Send your kills, deaths and duels to guild members running dG KillShot, and keep a copy of theirs. Turning this off also stops receiving guild history.",
+			get = function() return dgks.db.profile.historyShare end,
+			set = function(_, v)
+				dgks.db.profile.historyShare = v
+				if v then H:SyncNow() end
+			end,
+		},
+		historyTooltip = {
+			type = "toggle",
+			order = base + 44.5,
+			width = "full",
+			name = "Show kills and deaths in player tooltips",
+			desc = "When you mouse over a player, show how often you and your guild have killed them and been killed by them.",
+			get = function() return dgks.db.profile.historyTooltip end,
+			set = function(_, v) dgks.db.profile.historyTooltip = v end,
+		},
+		historyRetention = {
+			type = "range",
+			order = base + 45,
+			width = "double",
+			name = "Keep guild history for (days)",
+			desc = "Guild records older than this are deleted and not synced. Your personal history is always kept.",
+			min = 7, max = 365, step = 1, bigStep = 7,
+			get = function() return dgks.db.profile.historyRetentionDays end,
+			set = function(_, v)
+				dgks.db.profile.historyRetentionDays = v
+				H:Prune()
+				H:NotifyChanged()
+			end,
+		},
+		historyClearGuild = {
+			type = "execute",
+			order = base + 46,
+			name = "Clear guild history",
+			desc = "Delete your copy of this guild's history. It is synced again from guild members.",
+			confirm = true,
+			confirmText = "Delete your copy of the guild history? It will be synced again from guild members.",
+			func = function() H:ClearGuild() end,
+		},
+		historyClearMine = {
+			type = "execute",
+			order = base + 47,
+			name = "Clear my history",
+			desc = "Delete this character's personal history. Records already shared with the guild stay there.",
+			confirm = true,
+			confirmText = "Delete this character's personal kill and death history? This cannot be undone.",
+			func = function()
+				wipe(dgks.db.char.history.records)
+				H:NotifyChanged()
+			end,
 		},
 	}
 end
 
-function H:RegisterOptions()
-	LibStub("AceConfigRegistry-3.0"):RegisterOptionsTable("dG KillShot History", options)
-	LibStub("AceConfigDialog-3.0"):AddToBlizOptions("dG KillShot History", "History", "dG KillShot")
+-- Redraw the main page when history changes while it is open
+H.listeners.options = function()
+	LibStub("AceConfigRegistry-3.0"):NotifyChange("dG KillShot")
+end
+
+-- Unit tooltips ---------------------------------------------------------------------------------
+-- Mousing over a player adds how often you, and your guild, killed them and were killed by them.
+
+local function usableString(v)
+	return v ~= nil and not (issecretvalue and issecretvalue(v)) and type(v) == "string" and v ~= ""
+end
+
+local function countText(counts)
+	return ("|cff40ff40Killed %d|r   |cffff4040Killed by %d|r"):format(counts.K, counts.D)
+end
+
+local function addTooltipLines(tooltip, unit)
+	if not dgks.db.profile.historyTooltip or not usableString(unit) then return end
+	local isPlayer = UnitIsPlayer(unit)
+	if isPlayer ~= true or UnitIsUnit(unit, "player") == true then return end
+	local name, realm = UnitFullName(unit)
+	if not usableString(name) then return end
+	if usableString(realm) then name = name .. "-" .. realm end
+
+	local mine, guild = H:CountsFor(H.PlayerKey(name))
+	local guildAny = guild and (guild.K > 0 or guild.D > 0)
+	if mine.K == 0 and mine.D == 0 and not guildAny then return end
+
+	tooltip:AddDoubleLine("KillShot - you", countText(mine), 1, 0.82, 0)
+	if guild then
+		tooltip:AddDoubleLine("KillShot - guild", countText(guild), 1, 0.82, 0)
+	end
+end
+
+local function onUnitTooltip(tooltip)
+	if tooltip ~= GameTooltip or not tooltip.GetUnit then return end
+	-- A tooltip must never break because of us
+	pcall(function()
+		local _, unit = tooltip:GetUnit()
+		addTooltipLines(tooltip, unit)
+	end)
+end
+
+local tooltipInstalled = false
+function H:InstallTooltip()
+	if tooltipInstalled then return end
+	tooltipInstalled = true
+	if TooltipDataProcessor and TooltipDataProcessor.AddTooltipPostCall and Enum and Enum.TooltipDataType then
+		TooltipDataProcessor.AddTooltipPostCall(Enum.TooltipDataType.Unit, onUnitTooltip)
+	else
+		GameTooltip:HookScript("OnTooltipSetUnit", onUnitTooltip)
+	end
 end

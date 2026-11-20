@@ -552,11 +552,58 @@ local function importLegacy()
 	end
 end
 
+-- Counts per player (for tooltips) ----------------------------------------------------------------
+
+-- A key that names one player the same way everywhere: "Name-Realm" with the realm written like
+-- GetNormalizedRealmName (no spaces or hyphens). A name without a realm belongs to defaultRealm.
+function H.PlayerKey(name, defaultRealm)
+	if type(name) ~= "string" or name == "" then return nil end
+	local n, realm = name:match("^([^%-]+)%-(.+)$")
+	if not n then n, realm = name, defaultRealm or myRealm end
+	if not realm then return nil end
+	return n .. "-" .. realm:gsub("[%s%-]", "")
+end
+
+local function authorRealm(rec)
+	return type(rec.a) == "string" and rec.a:match("%-(.+)$") or myRealm
+end
+
+local function buildCounts(records, into)
+	for _, rec in ipairs(records) do
+		if rec.k == "K" or rec.k == "D" then
+			local key = H.PlayerKey(rec.o, authorRealm(rec))
+			if key then
+				local c = into[key]
+				if not c then
+					c = { K = 0, D = 0 }
+					into[key] = c
+				end
+				c[rec.k] = c[rec.k] + 1
+			end
+		end
+	end
+end
+
+-- How often this character, and the guild, killed (K) and were killed by (D) the given player.
+-- Returns two tables { K = n, D = n }, or nil for the guild when we are not in one.
+function H:CountsFor(key)
+	if not H.countCache then
+		local cache = { personal = {}, guild = {} }
+		buildCounts(H:PersonalRecords(), cache.personal)
+		buildCounts(H:GuildRecords(), cache.guild)
+		H.countCache = cache
+	end
+	local none = { K = 0, D = 0 }
+	local guild = guildKey and (H.countCache.guild[key] or none) or nil
+	return H.countCache.personal[key] or none, guild
+end
+
 -- Change notification (the UI listens) -----------------------------------------------------------
 
 H.listeners = {}
 local notifyScheduled = false
 function H:NotifyChanged()
+	H.countCache = nil
 	if notifyScheduled then return end
 	notifyScheduled = true
 	C_Timer.After(1, function()
@@ -595,13 +642,13 @@ function H:Initialize()
 
 	H:UpdateIdentity()
 	dgks:RegisterComm(PREFIX, "OnHistoryComm")
-	H:RegisterOptions() -- dgks_history_ui.lua
 end
 
 function H:Enable()
 	H:UpdateIdentity()
 	importLegacy()
 	H:Prune()
+	H:InstallTooltip() -- dgks_history_ui.lua
 
 	local f = CreateFrame("Frame")
 	f:RegisterEvent("PLAYER_GUILD_UPDATE")
