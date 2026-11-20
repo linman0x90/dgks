@@ -295,6 +295,7 @@ local ui = {
 		mine = { col = 1, desc = true },
 		guild = { col = 1, desc = true },
 		opponents = { col = 3, desc = true },
+		guildopponents = { col = 3, desc = true },
 		leaders = { col = 2, desc = true },
 	},
 }
@@ -399,6 +400,82 @@ local TABS = {
 				rows[#rows + 1] = {
 					cells = { classColored(o.name, o.class), className(o.class), tostring(o.K), tostring(o.D), o.W .. "-" .. o.L, when(o.last) },
 					sort = { o.name:lower(), className(o.class), o.K, o.D, o.W - o.L, o.last },
+				}
+			end
+			return rows
+		end,
+	},
+	guildopponents = {
+		noKindFilter = true,
+		columns = {
+			{ title = "Opponent", width = 0.19, desc = false },
+			{ title = "Class", width = 0.11, desc = false },
+			{ title = "Kills", width = 0.08, align = "RIGHT" },
+			{ title = "Deaths", width = 0.09, align = "RIGHT" },
+			{ title = "Duels W-L", width = 0.11, align = "RIGHT" },
+			{ title = "Fought by", width = 0.10, align = "RIGHT" },
+			{ title = "Top killer", width = 0.16, desc = false },
+			{ title = "Last seen", width = 0.16 },
+		},
+		rows = function()
+			local byKey, list = {}, {}
+			for _, rec in ipairs(H:GuildRecords()) do
+				local key = H.OpponentKey(rec)
+				local opp, member = H.ShortName(key), H.ShortName(rec.a)
+				-- Search matches the opponent or a member, so "Zed" or "Bob" both narrow the list
+				if key and passes(rec, { opp, member }, true) then
+					local o = byKey[key]
+					if not o then
+						o = { name = opp, K = 0, D = 0, W = 0, L = 0, last = 0, members = {}, memberCount = 0 }
+						byKey[key] = o
+						list[#list + 1] = o
+					end
+					o[rec.k] = o[rec.k] + 1
+					if rec.t >= o.last then o.last = rec.t end
+					if rec.oc then o.class = rec.oc end
+					local m = o.members[member]
+					if not m then
+						m = { name = member, class = rec.c, K = 0, D = 0, W = 0, L = 0 }
+						o.members[member] = m
+						o.memberCount = o.memberCount + 1
+					end
+					m[rec.k] = m[rec.k] + 1
+				end
+			end
+			local rows = {}
+			for _, o in ipairs(list) do
+				-- Members sorted by kills on this opponent, then fewest deaths
+				local members = {}
+				for _, m in pairs(o.members) do members[#members + 1] = m end
+				table.sort(members, function(a, b)
+					if a.K ~= b.K then return a.K > b.K end
+					if a.D ~= b.D then return a.D < b.D end
+					return a.name < b.name
+				end)
+				local top = members[1]
+				local topText, topSort = "", ""
+				if top and top.K > 0 then
+					topText = classColored(top.name, top.class) .. " (" .. top.K .. ")"
+					topSort = top.name:lower()
+				end
+				rows[#rows + 1] = {
+					cells = { classColored(o.name, o.class), className(o.class), tostring(o.K), tostring(o.D),
+						o.W .. "-" .. o.L, tostring(o.memberCount), topText, when(o.last) },
+					sort = { o.name:lower(), className(o.class), o.K, o.D, o.W - o.L, o.memberCount, topSort, o.last },
+					tip = function(tt)
+						tt:AddLine(classColored(o.name, o.class))
+						tt:AddLine(("Guild: %d kills, %d deaths, duels %d-%d"):format(o.K, o.D, o.W, o.L), 1, 1, 1)
+						tt:AddLine(" ")
+						for i = 1, math.min(10, #members) do
+							local m = members[i]
+							local duels = (m.W + m.L > 0) and ("   duels " .. m.W .. "-" .. m.L) or ""
+							tt:AddDoubleLine(classColored(m.name, m.class),
+								("|cff40ff40%d|r / |cffff4040%d|r%s"):format(m.K, m.D, duels))
+						end
+						if #members > 10 then
+							tt:AddLine(("and %d more"):format(#members - 10), 0.6, 0.6, 0.6)
+						end
+					end,
 				}
 			end
 			return rows
@@ -545,6 +622,7 @@ function H:ToggleWindow()
 		{ value = "mine", text = "My history" },
 		{ value = "guild", text = "Guild history" },
 		{ value = "opponents", text = "My opponents" },
+		{ value = "guildopponents", text = "Guild opponents" },
 		{ value = "leaders", text = "Guild leaderboard" },
 	})
 	tabs:SetCallback("OnGroupSelected", function(container, _, group) buildTab(container, group) end)

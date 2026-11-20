@@ -568,6 +568,11 @@ local function authorRealm(rec)
 	return type(rec.a) == "string" and rec.a:match("%-(.+)$") or myRealm
 end
 
+-- The PlayerKey of a record's opponent. A name without a realm is on the author's realm.
+function H.OpponentKey(rec)
+	return H.PlayerKey(rec.o, authorRealm(rec))
+end
+
 local function buildCounts(records, into)
 	for _, rec in ipairs(records) do
 		if rec.k == "K" or rec.k == "D" then
