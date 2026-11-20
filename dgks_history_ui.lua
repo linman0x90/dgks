@@ -607,29 +607,13 @@ local function buildTab(container, tab)
 	refreshRows()
 end
 
-function H:ToggleWindow()
-	if window then
-		window:Hide()
-		return
-	end
-	window = AceGUI:Create("Frame")
-	window:SetTitle("dG KillShot History")
-	window:SetWidth(820)
-	window:SetHeight(540)
-	window:SetLayout("Fill")
-	window:SetCallback("OnClose", function(widget)
-		_G.dgksHistoryFrame = nil
-		window, tableWidget = nil, nil
-		AceGUI:Release(widget)
-	end)
-	-- Close with Escape
-	_G.dgksHistoryFrame = window.frame
-	local listed = false
-	for _, name in ipairs(UISpecialFrames) do
-		if name == "dgksHistoryFrame" then listed = true end
-	end
-	if not listed then tinsert(UISpecialFrames, "dgksHistoryFrame") end
+-- The dG KillShot window: Overview, History and Settings tabs. Opened by /dgks and the minimap
+-- button. Overview and Settings are AceConfig option tables drawn into the tab.
 
+local mainTabs, overviewGroup
+ui.mainTab = "overview"
+
+local function buildHistory(container)
 	local tabs = AceGUI:Create("TabGroup")
 	tabs:SetLayout("Flow")
 	tabs:SetTabs({
@@ -639,9 +623,91 @@ function H:ToggleWindow()
 		{ value = "guildopponents", text = "Guild opponents" },
 		{ value = "leaders", text = "Guild leaderboard" },
 	})
-	tabs:SetCallback("OnGroupSelected", function(container, _, group) buildTab(container, group) end)
-	window:AddChild(tabs)
+	tabs:SetCallback("OnGroupSelected", function(c, _, group) buildTab(c, group) end)
+	container:AddChild(tabs)
 	tabs:SelectTab(ui.tab)
+end
+
+-- Draw a registered AceConfig options table into the tab
+local function buildOptions(container, appName)
+	local group = AceGUI:Create("SimpleGroup")
+	group:SetLayout("Fill")
+	group:SetFullWidth(true)
+	group:SetFullHeight(true)
+	container:AddChild(group)
+	LibStub("AceConfigDialog-3.0"):Open(appName, group)
+	return group
+end
+
+local function selectMain(container, tab)
+	container:ReleaseChildren()
+	tableWidget, overviewGroup = nil, nil
+	ui.mainTab = tab
+	if tab == "history" then
+		buildHistory(container)
+	elseif tab == "settings" then
+		buildOptions(container, "dG KillShot Settings")
+	else
+		overviewGroup = buildOptions(container, "dG KillShot Overview")
+	end
+end
+
+-- Open the window, on the given tab ("overview", "history" or "settings") or the last one used
+function dgks:ShowMainWindow(tab)
+	if window then
+		if tab and tab ~= ui.mainTab then mainTabs:SelectTab(tab) end
+		return
+	end
+	window = AceGUI:Create("Frame")
+	window:SetTitle("dG KillShot")
+	window:SetWidth(860)
+	window:SetHeight(620)
+	window:SetLayout("Fill")
+	window:SetCallback("OnClose", function(widget)
+		_G.dgksMainFrame = nil
+		window, tableWidget, mainTabs, overviewGroup = nil, nil, nil, nil
+		AceGUI:Release(widget)
+	end)
+	-- Close with Escape
+	_G.dgksMainFrame = window.frame
+	local listed = false
+	for _, name in ipairs(UISpecialFrames) do
+		if name == "dgksMainFrame" then listed = true end
+	end
+	if not listed then tinsert(UISpecialFrames, "dgksMainFrame") end
+
+	mainTabs = AceGUI:Create("TabGroup")
+	mainTabs:SetLayout("Fill")
+	mainTabs:SetTabs({
+		{ value = "overview", text = "Overview" },
+		{ value = "history", text = "History" },
+		{ value = "settings", text = "Settings" },
+	})
+	mainTabs:SetCallback("OnGroupSelected", function(c, _, group) selectMain(c, group) end)
+	window:AddChild(mainTabs)
+	window:SetStatusText(statusText())
+	mainTabs:SelectTab(tab or ui.mainTab)
+end
+
+-- Toggle the window. With a tab: switch to it if the window shows another tab, close it otherwise.
+function dgks:ToggleMainWindow(tab)
+	if window and (tab == nil or tab == ui.mainTab) then
+		window:Hide()
+		return
+	end
+	dgks:ShowMainWindow(tab)
+end
+
+-- Older entry point: the window on its History tab
+function H:ToggleWindow()
+	dgks:ToggleMainWindow("history")
+end
+
+-- Redraw the Overview when history changes while it is showing
+H.listeners.overview = function()
+	if window and overviewGroup then
+		LibStub("AceConfigDialog-3.0"):Open("dG KillShot Overview", overviewGroup)
+	end
 end
 
 H.listeners.window = refreshRows
@@ -742,20 +808,18 @@ function H:MainOptionArgs(base)
 			fontSize = "medium",
 			name = function() return topList("Top predators", "D", "death", "ffff4040") end,
 		},
+	}
+end
 
-		historyHeader = { type = "header", order = base + 40, name = "History" },
+-- Option entries for Settings > History. order runs from base upward.
+function H:SettingsArgs(base)
+	base = base - 41
+	return {
 		historyStatus = {
 			type = "description",
 			order = base + 41,
 			fontSize = "medium",
 			name = function() return statusText() .. "\n" end,
-		},
-		historyOpen = {
-			type = "execute",
-			order = base + 42,
-			name = "Open history",
-			desc = "Open the history window. You can also type /dgks history.",
-			func = function() H:ToggleWindow() end,
 		},
 		historySync = {
 			type = "execute",
@@ -830,11 +894,6 @@ function H:MainOptionArgs(base)
 			end,
 		},
 	}
-end
-
--- Redraw the main page when history changes while it is open
-H.listeners.options = function()
-	LibStub("AceConfigRegistry-3.0"):NotifyChange("dG KillShot")
 end
 
 -- Unit tooltips ---------------------------------------------------------------------------------

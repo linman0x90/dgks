@@ -52,24 +52,55 @@ end
 
 dgks = LibStub("AceAddon-3.0"):NewAddon("dgks", "AceEvent-3.0", "AceConsole-3.0", "LibSink-2.0","AceComm-3.0","AceSerializer-3.0")
 
-local function giveOptions() 
-	local options = { 
+-- Overview tab of the dG KillShot window: record and streak tiles, Top 5 lists
+local function giveOverview()
+	local options = {
 		type = "group",
-		name = "dG KillShot",
-		--handler = dgks,/dgk
-		get = function(k) return db[k.arg] end,
-		set = function(k, v) db[k.arg] = v end,
+		name = "Overview",
 		args = {
 			version = {
 				type = "description",
 				name = "|cff9d9d9dVersion " .. version .. "|r\n",
 				order = 2
 			},
-			-- The record tiles, Top 5 lists and history settings are added below from dgks_history_ui.lua
+			-- The record tiles and Top 5 lists are added below from dgks_history_ui.lua
 			streak = dgks.History.Tile(15, "Kill streak", streak, "ff40ff40"),
 			maxstreak = dgks.History.Tile(16, "Best streak", dgks.db.profile.maxstreak, "ffffd100"),
 			deathstreak = dgks.History.Tile(17, "Death streak", deathstreak, "ffff4040"),
 			maxdeathstreak = dgks.History.Tile(18, "Worst streak", dgks.db.profile.maxdeathstreak, "ffff8040"),
+			--@debug@
+			-- Dev Debugging functions
+			testdgkskill = {
+				type = 'execute',
+				name = 'Simulate Killshot',
+				order = 90,
+				func = function()
+					dgks:Test()
+				end
+			},
+			testdgdeath = {
+				type = 'execute',
+				name = 'Simulate Death',
+				order = 91,
+				func = function()
+					dgks:TestPlayerDeath()
+				end
+			}
+			--@end-debug@
+		}
+	}
+	for key, option in pairs(dgks.History:MainOptionArgs(10)) do
+		options.args[key] = option
+	end
+	return options
+end
+
+-- Settings > History tab: history options, then the reset and clear buttons
+local function giveHistorySettings()
+	local history = {
+		type = "group",
+		name = "History",
+		args = {
 			resetHeader = {
 				type = "header",
 				name = "Reset",
@@ -103,29 +134,12 @@ local function giveOptions()
 				width = "full",
 				order = 92
 			},
-			--@debug@
-			-- Dev Debugging functions
-			testdgkskill = {
-				type = 'execute',
-				name = 'Simulate Killshot',
-				func = function()
-					dgks:Test()
-				end
-			},
-			testdgdeath = {
-				type = 'execute',
-				name = 'Simulate Death',
-				func = function()
-					dgks:TestPlayerDeath()
-				end
-			}
-			--@end-debug@
 		}
 	}
-	for key, option in pairs(dgks.History:MainOptionArgs(10)) do
-		options.args[key] = option
+	for key, option in pairs(dgks.History:SettingsArgs(1)) do
+		history.args[key] = option
 	end
-	return options
+	return history
 end
 
 local function giveGeneral()
@@ -146,7 +160,7 @@ local function giveGeneral()
 			minimapButton = {
 				type = 'toggle',
 				name = 'Show minimap button',
-				desc = 'Left-click the button to open your history, right-click to open these options. Drag it to move it around the minimap.',
+				desc = 'Left-click the button to open the dG KillShot window, right-click to open it on Settings. Drag it to move it around the minimap.',
 				get = function() return not dgks.db.profile.minimap.hide end,
 				set = function(info, v)
 					dgks.db.profile.minimap.hide = not v
@@ -1330,6 +1344,49 @@ local function giveOutput()
 	return output
 end
 
+-- Settings tab of the dG KillShot window: one sub-tab per settings page
+local function giveSettings()
+	local pages = {
+		{ "general", giveGeneral(), "General" },
+		{ "broadcasts", giveBroadcasts(), "Broadcasts" },
+		{ "duels", giveDuels(), "Duels" },
+		{ "screenshots", giveScreenshots(), "Screenshots" },
+		{ "ranks", giveRanks(), "Ranks" },
+		{ "output", giveOutput(), "Text Output" },
+		{ "history", giveHistorySettings(), "History" },
+	}
+	local settings = { type = "group", name = "Settings", childGroups = "tab", args = {} }
+	for i, page in ipairs(pages) do
+		local group = page[2]
+		group.name = page[3]
+		group.order = i
+		settings.args[page[1]] = group
+	end
+	return settings
+end
+
+-- The page in Blizzard's Settings panel: everything lives in the dG KillShot window now
+local function giveLauncher()
+	return {
+		type = "group",
+		name = "dG KillShot",
+		args = {
+			desc = {
+				type = "description",
+				order = 1,
+				fontSize = "medium",
+				name = "Stats, history and all settings are in the dG KillShot window.\n\nOpen it with /dgks or by clicking the minimap button.\n",
+			},
+			open = {
+				type = "execute",
+				order = 2,
+				name = "Open dG KillShot",
+				func = function() dgks:ShowMainWindow("settings") end,
+			},
+		},
+	}
+end
+
 local defaults = {
 	profile = {
 		configversion = newestconfigversion,
@@ -1415,47 +1472,37 @@ function dgks:OnInitialize()
 	-- Setup Config Screens
 	local AceConfigRegistry = LibStub("AceConfigRegistry-3.0")
 
-	AceConfigRegistry:RegisterOptionsTable("dG KillShot", giveOptions)
-	AceConfigRegistry:RegisterOptionsTable("dG KillShot General", giveGeneral)
-	AceConfigRegistry:RegisterOptionsTable("dG KillShot Broadcasts", giveBroadcasts)
-	AceConfigRegistry:RegisterOptionsTable("dG KillShot Screenshots", giveScreenshots)
-	AceConfigRegistry:RegisterOptionsTable("dG KillShot Duels", giveDuels)
-	AceConfigRegistry:RegisterOptionsTable("dG KillShot Ranks", giveRanks)
+	-- The dG KillShot window (dgks_history_ui.lua) draws the Overview and Settings tables in its tabs
+	AceConfigRegistry:RegisterOptionsTable("dG KillShot Overview", giveOverview)
+	AceConfigRegistry:RegisterOptionsTable("dG KillShot Settings", giveSettings)
 	AceConfigRegistry:RegisterOptionsTable("dG KillShot File Setup", giveSoundFileSetup)
-	AceConfigRegistry:RegisterOptionsTable("dG KillShot Output", giveOutput)	
-	
-	local AceConfigDialog = LibStub("AceConfigDialog-3.0")
-	
-	local ref, cat = AceConfigDialog:AddToBlizOptions("dG KillShot", "dG KillShot")
-	AceConfigDialog:AddToBlizOptions("dG KillShot General", "General", "dG KillShot")
-	AceConfigDialog:AddToBlizOptions("dG KillShot Broadcasts", "Broadcasts", "dG KillShot")
-	AceConfigDialog:AddToBlizOptions("dG KillShot Screenshots", "Screenshots", "dG KillShot")
-	AceConfigDialog:AddToBlizOptions("dG KillShot Duels", "Duels", "dG KillShot")
-	AceConfigDialog:AddToBlizOptions("dG KillShot Ranks", "Ranks", "dG KillShot")
-	-- Clean up UI
-	-- AceConfigDialog:AddToBlizOptions("dG KillShot File Setup", "Sound File Setup", "dG KillShot")
-	AceConfigDialog:AddToBlizOptions("dG KillShot Output", "Combat Text Output", "dG KillShot")
 
-	
-	-- Cannot get ACECONSOLE working correctly in latest versions so I do it the old fashioned way	
+	-- Blizzard's Settings panel gets one page that opens the window
+	AceConfigRegistry:RegisterOptionsTable("dG KillShot", giveLauncher)
+	LibStub("AceConfigDialog-3.0"):AddToBlizOptions("dG KillShot", "dG KillShot")
+
+	-- Cannot get ACECONSOLE working correctly in latest versions so I do it the old fashioned way
+	-- /dgks              toggle the dG KillShot window
+	-- /dgks history      the window on its History tab
+	-- /dgks settings     the window on its Settings tab (also: options, config)
+	-- /dgks deathrecap   reopen the last death recap window
+	-- /dgks recap        print the raw Death Recap of the last death
 	SLASH_DGKS1 = "/dgks"
 	SLASH_DGKS2 = "/ks"
 	SlashCmdList.DGKS = function(msg)
-		if type(msg) == "string" and msg:lower():match("^%s*history") then
-			dgks.History:ToggleWindow()
-			return
-		end
-		if type(msg) == "string" and msg:lower():match("^%s*deathrecap") then
+		local cmd = type(msg) == "string" and msg:lower():match("^%s*(%S*)") or ""
+		if cmd == "history" then
+			dgks:ShowMainWindow("history")
+		elseif cmd == "settings" or cmd == "options" or cmd == "config" then
+			dgks:ShowMainWindow("settings")
+		elseif cmd == "deathrecap" then
 			dgks:ToggleDeathRecap()
-			return
-		end
-		if type(msg) == "string" and msg:lower():match("^%s*recap") then
+		elseif cmd == "recap" then
 			dgks:DumpRecap()
-			return
+		else
+			dgks:ToggleMainWindow()
 		end
-		dgks:OpenOptions()
 	end
-	self.optionsCategory = cat
 
 	-- Setup Comms
 	self:RegisterComm("dgks") --Killshots
@@ -1467,9 +1514,9 @@ function dgks:OnInitialize()
 	self.History:Initialize()
 end
 
--- Open the dG KillShot options page
+-- Open the dG KillShot window on its Settings tab
 function dgks:OpenOptions()
-	Settings.OpenToCategory(self.optionsCategory)
+	dgks:ShowMainWindow("settings")
 end
 
 -- Current killing streak and death streak, for the minimap button tooltip

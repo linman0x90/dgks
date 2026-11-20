@@ -1,6 +1,6 @@
 -- dG KillShot minimap button, and the retail Addon Compartment entry (the addon menu on the minimap)
---   Left-click: open the history window
---   Right-click: open the options
+--   Left-click: open or close the dG KillShot window
+--   Right-click: open the window on its Settings tab
 --   Drag: move the button around the minimap
 
 local dgks = dgks
@@ -33,17 +33,17 @@ local function showTooltip(owner, anchor)
 		end
 	end
 	tt:AddLine(" ")
-	tt:AddLine("Left-click: open history", 0.6, 0.6, 0.6)
-	tt:AddLine("Right-click: open options", 0.6, 0.6, 0.6)
+	tt:AddLine("Left-click: open dG KillShot", 0.6, 0.6, 0.6)
+	tt:AddLine("Right-click: settings", 0.6, 0.6, 0.6)
 	if owner == button then tt:AddLine("Drag: move this button", 0.6, 0.6, 0.6) end
 	tt:Show()
 end
 
 local function onClick(mouseButton)
 	if mouseButton == "RightButton" then
-		dgks:OpenOptions()
+		dgks:ToggleMainWindow("settings")
 	else
-		dgks.History:ToggleWindow()
+		dgks:ToggleMainWindow()
 	end
 end
 
