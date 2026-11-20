@@ -50,89 +50,73 @@ local function isSecret(v)
 	return issecretvalue ~= nil and issecretvalue(v) == true
 end
 
-local function sortListByLength(t,a,b)
-	local acount, bcount = 0,0
-	for _ in pairs(t[a]) do acount = acount + 1 end
-	for _ in pairs(t[b]) do bcount = bcount + 1 end
-	return acount > bcount
-end
-
-local function spairs(t, order)
-    -- collect the keys
-    local keys = {}
-    for k in pairs(t) do keys[#keys+1] = k end
-
-    -- if order function given, sort by it by passing the table and keys a, b,
-    -- otherwise just sort the keys 
-    if order then
-        table.sort(keys, function(a,b) return order(t, a, b) end)
-    else
-        table.sort(keys)
-    end
-
-    -- return the iterator function
-    local i = 0
-    return function()
-        i = i + 1
-        if keys[i] then
-            return keys[i], t[keys[i]]
-        end
-    end
-end
-
-local function getSortedList(mytable, count)
-	local tempString = ""
-	for i,v in spairs(mytable, function (t,a,b) return sortListByLength(t,a,b) end) do
-		tempString = tempString .. table.maxn(v) .. " " .. i .. " " .. v[table.maxn(v)] .. "\n"
-		if count ~= nil then
-			count = count - 1
-		end
-		if count == 0 then return tempString end
+-- Is this GUID one of our party or raid members (not us)?
+local function isGroupMember(guid)
+	if type(guid) ~= "string" or isSecret(guid) then return false end
+	local prefix, count = "party", 4
+	if IsInRaid and IsInRaid() then prefix, count = "raid", 40 end
+	for i = 1, count do
+		local g = UnitGUID(prefix .. i)
+		if g ~= nil and not isSecret(g) and g == guid then return true end
 	end
-	return tempString
+	return false
 end
 
 dgks = LibStub("AceAddon-3.0"):NewAddon("dgks", "AceEvent-3.0", "AceConsole-3.0", "LibSink-2.0","AceComm-3.0","AceSerializer-3.0")
 
-local function giveOptions() 
-	local options = { 
+-- Overview tab of the dG KillShot window: record and streak tiles, Top 5 lists
+local function giveOverview()
+	local options = {
 		type = "group",
-		name = "dG KillShot",
-		--handler = dgks,/dgk
-		get = function(k) return db[k.arg] end,
-		set = function(k, v) db[k.arg] = v end,
+		name = "Overview",
 		args = {
 			version = {
 				type = "description",
-				name = "Version " .. version,
+				name = "|cff9d9d9dVersion " .. version .. "|r\n",
 				order = 2
 			},
-			prey = {
-				type = "description",
-				name = "Top Prey:\n" .. getSortedList(dgks.db.profile.killList, 5),
-				order = 5
+			-- The record tiles and Top 5 lists are added below from dgks_history_ui.lua
+			streak = dgks.History.Tile(15, "Kill streak", streak, "ff40ff40"),
+			maxstreak = dgks.History.Tile(16, "Best streak", dgks.db.profile.maxstreak, "ffffd100"),
+			deathstreak = dgks.History.Tile(17, "Death streak", deathstreak, "ffff4040"),
+			maxdeathstreak = dgks.History.Tile(18, "Worst streak", dgks.db.profile.maxdeathstreak, "ffff8040"),
+			--@debug@
+			-- Dev Debugging functions
+			testdgkskill = {
+				type = 'execute',
+				name = 'Simulate Killshot',
+				order = 90,
+				func = function()
+					dgks:Test()
+				end
 			},
-			predators = {
-				type = "description",
-				name = "Top Predators:\n" .. getSortedList(dgks.db.profile.deathList, 5),
-				order = 10
-			},
-			killstreak = {
-				type = "description",
-				name = "Current killing streak: " .. streak .. "\nLongest killing streak: " .. dgks.db.profile.maxstreak .. "\n",
-				order = 12,
-				width = 1
-			},
-			deathstreak = {
-				type = "description",
-				name = "Current death streak: " .. deathstreak .. "\nLongest death streak: " .. dgks.db.profile.maxdeathstreak .. "\n",
-				order = 14,
-				width = 2
-			},
-			maxks = {
-				type = "description",
-				name = "Last 20 Kills\n" .. dgks.getKillLog(),
-				order = 15
+			testdgdeath = {
+				type = 'execute',
+				name = 'Simulate Death',
+				order = 91,
+				func = function()
+					dgks:TestPlayerDeath()
+				end
+			}
+			--@end-debug@
+		}
+	}
+	for key, option in pairs(dgks.History:MainOptionArgs(10)) do
+		options.args[key] = option
+	end
+	return options
+end
+
+-- Settings > History tab: history options, then the reset and clear buttons
+local function giveHistorySettings()
+	local history = {
+		type = "group",
+		name = "History",
+		args = {
+			resetHeader = {
+				type = "header",
+				name = "Reset",
+				order = 90
 			},
 			resetmaxks = {
 				type = 'execute',
@@ -148,7 +132,7 @@ local function giveOptions()
 					dgks.db.profile.deathList = dgks.db.defaults.profile.deathList
 				end,
 				width = "full",
-				order = 20
+				order = 91
 			},
 			resetdgks = {
 				type = 'execute',
@@ -160,28 +144,14 @@ local function giveOptions()
 					dgks.db:ResetProfile()
 				end,
 				width = "full",
-				order = 30
+				order = 92
 			},
-			--@debug@
-			-- Dev Debugging functions
-			testdgkskill = {
-				type = 'execute',
-				name = 'Simulate Killshot',
-				func = function()
-					dgks:Test()
-				end
-			},
-			testdgdeath = {
-				type = 'execute',
-				name = 'Simulate Death',
-				func = function()
-					dgks:TestPlayerDeath()
-				end
-			}
-			--@end-debug@
 		}
 	}
-	return options
+	for key, option in pairs(dgks.History:SettingsArgs(1)) do
+		history.args[key] = option
+	end
+	return history
 end
 
 local function giveGeneral()
@@ -190,6 +160,27 @@ local function giveGeneral()
 		name = "General",
 		handler = dgks,
 		args = {
+			deathRecapWindow = {
+				type = 'toggle',
+				name = 'Show a death recap when you die',
+				desc = 'Open a window listing the damage you took in the last 10 seconds before dying. Reopen it with /dgks deathrecap.',
+				get = function() return dgks.db.profile.deathRecap end,
+				set = function(info, v) dgks.db.profile.deathRecap = v end,
+				order = 2,
+				width = "full"
+			},
+			minimapButton = {
+				type = 'toggle',
+				name = 'Show minimap button',
+				desc = 'Left-click the button to open the dG KillShot window, right-click to open it on Settings. Drag it to move it around the minimap.',
+				get = function() return not dgks.db.profile.minimap.hide end,
+				set = function(info, v)
+					dgks.db.profile.minimap.hide = not v
+					dgks:UpdateMinimapButton()
+				end,
+				order = 1,
+				width = "full"
+			},
 			style = {
 				type = 'select',
 				name = 'Select how often to trigger killshots notifications:',
@@ -291,139 +282,8 @@ local function giveGeneral()
 				set = function(info, b)
 					dgks.db.profile.doemote = b
 				end,
-				values = {
-					none = "None",
-					BELCH = "Belch",
-					BOGGLE = "Boggle",
-					BONK = "Bonk",
-					BORED = "Bored",
-					BOUNCE = "Bounce",
-					BOW = "Bow",
-					APPLAUD = "Bravo",
-					BRB = "BRB",
-					BURP = "Burp",
-					BYE = "Bye",
-					CACKLE = "Cackle",
-					CALM = "Calm",
-					SCRATCH = "Cat",
-					CHEER = "Cheer",
-					EAT = "Chew",
-					CHICKEN = "Chicken",
-					CHUCKLE = "Chuckle",
-					CLAP = "Clap",
-					COMFORT = "Comfort",
-					COMMEND = "Commend",
-					CONFUSED = "Confused",
-					CONGRATULATE = "Congrats",
-					COUGH = "Cough",
-					COWER = "Cower",
-					CRACK = "Crack Knuckles",
-					CRINGE = "Cringe",
-					CRY = "Cry",
-					CUDDLE = "Cuddle",
-					CURIOUS = "Curious",
-					CURTSEY = "Curtsey",
-					DANCE = "Dance",
-					DOOM = "Doom",
-					DRINK = "Drink",
-					DROOL = "Drool",
-					EYE = "Eye",
-					FART = "Fart",
-					FROWN = "Frown",
-					GASP = "Gasp",
-					GLARE = "Glare",
-					GLOAT = "Gloat",
-					GOLFCLAP = "Golf Clap",
-					GREET = "Greet",
-					GRIN = "Grin",
-					GROAN = "Groan",
-					GROWL = "Growl",
-					GUFFAW = "Guffaw",
-					HAIL = "Hail",
-					HAPPY = "Happy",
-					HISS = "Hiss",
-					HUG = "Hug",
-					FIDGET = "Impatient",
-					INSULT = "Insult",
-					INTRODUCE = "Introduce",
-					JK = "JK",
-					KISS = "Kiss",
-					KNEEL = "Kneel",
-					KNUCKLES = "Knuckles",
-					LAUGH = "Laugh",
-					LICK = "Lick",
-					LISTEN = "Listen",
-					LOST = "Lost",
-					LOVE = "Love",
-					ANGRY = "Mad",
-					MASSAGE = "Massage",
-					MOAN = "Moan",
-					MOCK = "Mock",
-					MOO = "Moo",
-					MOON = "Moon",
-					MOURN = "Mourn",
-					NO = "No",
-					NOD = "Nod",
-					NOSEPICK = "Nosepick",
-					PAT = "Pat",
-					PEER = "Peer",
-					SHOO = "Shoo",
-					PITY = "Pity",
-					PLEAD = "Plead",
-					POINT = "Point",
-					POKE = "Poke",
-					PONDER = "Ponder",
-					POUNCE = "Pounce",
-					PRAISE = "Praise",
-					PRAY = "Pray",
-					PURR = "Purr",
-					PULSE = "Pulse",
-					PUZZLE = "Puzzled",
-					TALKQ = "Question",
-					RAISE = "Raise",
-					RASP = "Rasp (Rude Gesture)",
-					READY = "Ready",
-					SHAKE = "Shake Rear",
-					ROAR = "Roar",
-					ROFL = "ROFL",
-					RUDE = "Rude",
-					SALUTE = "Salute",
-					SEXY = "Sexy",
-					SHIMMY = "Shimmy",
-					SHY = "Shy",
-					SIGH = "Sigh",
-					JOKE = "Silly",
-					SLAP = "Slap",
-					SMELL = "Smell",
-					SMILE = "Smile",
-					SMIRK = "Smirk",
-					SNARL = "Snarl",
-					SNICKER = "Snicker",
-					SNIFF = "Sniff",
-					SNUB = "Snub",
-					SOOTHE = "Soothe",
-					APOLOGIZE = "Sorry",
-					SPIT = "Spit",
-					STARE = "Stare",
-					SURPRISED = "Surprised",
-					TAP = "Tap",
-					TAUNT = "Taunt",
-					TEASE = "Tease",
-					THANK = "Thank",
-					THREATEN = "Threaten",
-					TICKLE = "Tickle",
-					TIRED = "Tired",
-					VETO = "Veto",
-					VICTORY = "Victory",
-					VIOLIN = "Violin",
-					WAVE = "Wave",
-					WELCOME = "Welcome",
-					WHINE = "Whine",
-					WHISTLE = "Whistle",
-					WINK = "Wink",
-					WORK = "Work",
-					YAWN = "Yawn"
-				},
+				values = function() return dgks:EmoteSelectValues() end,
+				sorting = function() return dgks:EmoteSelectSorting() end,
 				order = 25
 				},
 			dotxtemote = {
@@ -777,137 +637,8 @@ local function giveDuels()
 				set = function(info, b)
 					dgks.db.profile.duelemotewin = b
 				end,
-				values = {
-					none = "None",
-					BELCH = "Belch",
-					BOGGLE = "Boggle",
-					BONK = "Bonk",
-					BORED = "Bored",
-					BOUNCE = "Bounce",
-					BOW = "Bow",
-					APPLAUD = "Bravo",
-					BRB = "BRB",
-					BURP = "Burp",
-					BYE = "Bye",
-					CACKLE = "Cackle",
-					CALM = "Calm",
-					SCRATCH = "Cat",
-					CHEER = "Cheer",
-					EAT = "Chew",
-					CHICKEN = "Chicken",
-					CHUCKLE = "Chuckle",
-					CLAP = "Clap",
-					COMFORT = "Comfort",
-					COMMEND = "Commend",
-					CONFUSED = "Confused",
-					CONGRATULATE = "Congrats",
-					COUGH = "Cough",
-					COWER = "Cower",
-					CRACK = "Crack Knuckles",
-					CRINGE = "Cringe",
-					CRY = "Cry",
-					CUDDLE = "Cuddle",
-					CURIOUS = "Curious",
-					CURTSEY = "Curtsey",
-					DANCE = "Dance",
-					DOOM = "Doom",
-					DRINK = "Drink",
-					DROOL = "Drool",
-					EYE = "Eye",
-					FART = "Fart",
-					FROWN = "Frown",
-					GASP = "Gasp",
-					GLARE = "Glare",
-					GLOAT = "Gloat",
-					GOLFCLAP = "Golf Clap",
-					GREET = "Greet",
-					GRIN = "Grin",
-					GROAN = "Groan",
-					GROWL = "Growl",
-					GUFFAW = "Guffaw",
-					HAIL = "Hail",
-					HAPPY = "Happy",
-					HUG = "Hug",
-					FIDGET = "Impatient",
-					INSULT = "Insult",
-					INTRODUCE = "Introduce",
-					JK = "JK",
-					KISS = "Kiss",
-					KNEEL = "Kneel",
-					KNUCKLES = "Knuckles",
-					LAUGH = "Laugh",
-					LICK = "Lick",
-					LISTEN = "Listen",
-					LOST = "Lost",
-					LOVE = "Love",
-					ANGRY = "Mad",
-					MASSAGE = "Massage",
-					MOAN = "Moan",
-					MOCK = "Mock",
-					MOO = "Moo",
-					MOON = "Moon",
-					MOURN = "Mourn",
-					NO = "No",
-					NOD = "Nod",
-					NOSEPICK = "Nosepick",
-					PAT = "Pat",
-					PEER = "Peer",
-					SHOO = "Shoo",
-					PITY = "Pity",
-					PLEAD = "Plead",
-					POINT = "Point",
-					POKE = "Poke",
-					PONDER = "Ponder",
-					POUNCE = "Pounce",
-					PRAISE = "Praise",
-					PRAY = "Pray",
-					PURR = "Purr",
-					PUZZLE = "Puzzled",
-					TALKQ = "Question",
-					RAISE = "Raise",
-					RASP = "Rasp (Rude Gesture)",
-					READY = "Ready",
-					SHAKE = "Shake Rear",
-					ROAR = "Roar",
-					ROFL = "ROFL",
-					RUDE = "Rude",
-					SALUTE = "Salute",
-					SEXY = "Sexy",
-					SHIMMY = "Shimmy",
-					SHY = "Shy",
-					SIGH = "Sigh",
-					JOKE = "Silly",
-					SLAP = "Slap",
-					SMELL = "Smell",
-					SMILE = "Smile",
-					SMIRK = "Smirk",
-					SNARL = "Snarl",
-					SNICKER = "Snicker",
-					SNIFF = "Sniff",
-					SNUB = "Snub",
-					SOOTHE = "Soothe",
-					APOLOGIZE = "Sorry",
-					SPIT = "Spit",
-					STARE = "Stare",
-					SURPRISED = "Surprised",
-					TAP = "Tap",
-					TAUNT = "Taunt",
-					TEASE = "Tease",
-					THANK = "Thank",
-					THREATEN = "Threaten",
-					TICKLE = "Tickle",
-					TIRED = "Tired",
-					VETO = "Veto",
-					VICTORY = "Victory",
-					VIOLIN = "Violin",
-					WAVE = "Wave",
-					WELCOME = "Welcome",
-					WHINE = "Whine",
-					WHISTLE = "Whistle",
-					WINK = "Wink",
-					WORK = "Work",
-					YAWN = "Yawn"
-				},
+				values = function() return dgks:EmoteSelectValues() end,
+				sorting = function() return dgks:EmoteSelectSorting() end,
 				order = 25
 				},
 				duelemoteloss = {
@@ -920,138 +651,8 @@ local function giveDuels()
 				set = function(info, b)
 					dgks.db.profile.duelemoteloss = b
 				end,
-				values = {
-					none = "None",
-					BELCH = "Belch",
-					BLOWKISS = "Blow Kiss",
-					BOGGLE = "Boggle",
-					BONK = "Bonk",
-					BORED = "Bored",
-					BOUNCE = "Bounce",
-					BOW = "Bow",
-					APPLAUD = "Bravo",
-					BRB = "BRB",
-					BURP = "Burp",
-					BYE = "Bye",
-					CACKLE = "Cackle",
-					CALM = "Calm",
-					SCRATCH = "Cat",
-					CHEER = "Cheer",
-					EAT = "Chew",
-					CHICKEN = "Chicken",
-					CHUCKLE = "Chuckle",
-					CLAP = "Clap",
-					COMFORT = "Comfort",
-					COMMEND = "Commend",
-					CONFUSED = "Confused",
-					CONGRATULATE = "Congrats",
-					COUGH = "Cough",
-					COWER = "Cower",
-					CRACK = "Crack Knuckles",
-					CRINGE = "Cringe",
-					CRY = "Cry",
-					CUDDLE = "Cuddle",
-					CURIOUS = "Curious",
-					CURTSEY = "Curtsey",
-					DANCE = "Dance",
-					DOOM = "Doom",
-					DRINK = "Drink",
-					DROOL = "Drool",
-					EYE = "Eye",
-					FART = "Fart",
-					FROWN = "Frown",
-					GASP = "Gasp",
-					GLARE = "Glare",
-					GLOAT = "Gloat",
-					GOLFCLAP = "Golf Clap",
-					GREET = "Greet",
-					GRIN = "Grin",
-					GROAN = "Groan",
-					GROWL = "Growl",
-					GUFFAW = "Guffaw",
-					HAIL = "Hail",
-					HAPPY = "Happy",
-					HUG = "Hug",
-					FIDGET = "Impatient",
-					INSULT = "Insult",
-					INTRODUCE = "Introduce",
-					JK = "JK",
-					KISS = "Kiss",
-					KNEEL = "Kneel",
-					KNUCKLES = "Knuckles",
-					LAUGH = "Laugh",
-					LICK = "Lick",
-					LISTEN = "Listen",
-					LOST = "Lost",
-					LOVE = "Love",
-					ANGRY = "Mad",
-					MASSAGE = "Massage",
-					MOAN = "Moan",
-					MOCK = "Mock",
-					MOO = "Moo",
-					MOON = "Moon",
-					MOURN = "Mourn",
-					NO = "No",
-					NOSEPICK = "Nosepick",
-					PAT = "Pat",
-					PEER = "Peer",
-					SHOO = "Shoo",
-					PITY = "Pity",
-					PLEAD = "Plead",
-					POINT = "Point",
-					POKE = "Poke",
-					PONDER = "Ponder",
-					POUNCE = "Pounce",
-					PRAISE = "Praise",
-					PRAY = "Pray",
-					PURR = "Purr",
-					PUZZLE = "Puzzled",
-					TALKQ = "Question",
-					RAISE = "Raise",
-					RASP = "Rasp (Rude Gesture)",
-					READY = "Ready",
-					SHAKE = "Shake Rear",
-					ROAR = "Roar",
-					ROFL = "ROFL",
-					RUDE = "Rude",
-					SALUTE = "Salute",
-					SEXY = "Sexy",
-					SHIMMY = "Shimmy",
-					SHY = "Shy",
-					SIGH = "Sigh",
-					JOKE = "Silly",
-					SLAP = "Slap",
-					SMELL = "Smell",
-					SMILE = "Smile",
-					SMIRK = "Smirk",
-					SNARL = "Snarl",
-					SNICKER = "Snicker",
-					SNIFF = "Sniff",
-					SNUB = "Snub",
-					SOOTHE = "Soothe",
-					APOLOGIZE = "Sorry",
-					SPIT = "Spit",
-					STARE = "Stare",
-					SURPRISED = "Surprised",
-					TAP = "Tap",
-					TAUNT = "Taunt",
-					TEASE = "Tease",
-					THANK = "Thank",
-					THREATEN = "Threaten",
-					TICKLE = "Tickle",
-					TIRED = "Tired",
-					VETO = "Veto",
-					VICTORY = "Victory",
-					VIOLIN = "Violin",
-					WAVE = "Wave",
-					WELCOME = "Welcome",
-					WHINE = "Whine",
-					WHISTLE = "Whistle",
-					WINK = "Wink",
-					WORK = "Work",
-					YAWN = "Yawn",
-					NOD = "Yes"
-				},
+				values = function() return dgks:EmoteSelectValues() end,
+				sorting = function() return dgks:EmoteSelectSorting() end,
 				order = 26
 				},
 			dueltxtemote = {
@@ -1365,6 +966,49 @@ local function giveOutput()
 	return output
 end
 
+-- Settings tab of the dG KillShot window: one sub-tab per settings page
+local function giveSettings()
+	local pages = {
+		{ "general", giveGeneral(), "General" },
+		{ "broadcasts", giveBroadcasts(), "Broadcasts" },
+		{ "duels", giveDuels(), "Duels" },
+		{ "screenshots", giveScreenshots(), "Screenshots" },
+		{ "ranks", giveRanks(), "Ranks" },
+		{ "output", giveOutput(), "Text Output" },
+		{ "history", giveHistorySettings(), "History" },
+	}
+	local settings = { type = "group", name = "Settings", childGroups = "tab", args = {} }
+	for i, page in ipairs(pages) do
+		local group = page[2]
+		group.name = page[3]
+		group.order = i
+		settings.args[page[1]] = group
+	end
+	return settings
+end
+
+-- The page in Blizzard's Settings panel: everything lives in the dG KillShot window now
+local function giveLauncher()
+	return {
+		type = "group",
+		name = "dG KillShot",
+		args = {
+			desc = {
+				type = "description",
+				order = 1,
+				fontSize = "medium",
+				name = "Stats, history and all settings are in the dG KillShot window.\n\nOpen it with /dgks or by clicking the minimap button.\n",
+			},
+			open = {
+				type = "execute",
+				order = 2,
+				name = "Open dG KillShot",
+				func = function() dgks:ShowMainWindow("settings") end,
+			},
+		},
+	}
+end
+
 local defaults = {
 	profile = {
 		configversion = newestconfigversion,
@@ -1420,6 +1064,14 @@ local defaults = {
 		sink20Sticky = true,
 		sink20OutputSink = "Default",
 		sink20ScrollArea = "Outgoing",
+		historyShare = true, -- Share our kills and deaths with the guild history
+		historyRetentionDays = 90, -- Guild history older than this is pruned; personal history is kept
+		historyTooltip = true, -- Show kill and death counts when mousing over a player
+		minimap = { hide = false, angle = 200 }, -- Minimap button (dgks_minimap.lua)
+		guessKiller = true, -- When the Death Recap cannot name the killer, record the likely one
+		deathRecap = true, -- Open the death recap window when we die (dgks_deathrecap.lua)
+		inspectSpecs = true, -- Inspect nearby enemy players to learn their spec (dgks_players.lua)
+		recordTeamKills = true, -- Record party and raid members' killing blows on players (team kills)
 	},
 }
 
@@ -1429,6 +1081,8 @@ function dgks:OnInitialize()
 	self.db = LibStub("AceDB-3.0"):New("dgksDB", defaults, true)
 
 	self:SetSinkStorage(self.db.profile)
+	-- Emote choices: aliases become real emotes, unavailable ones reset (dgks_emotelist.lua)
+	self:MigrateEmoteSettings()
 
 	-- Increment newestconfigversion to reset db to defaults when needed
 	if (dgks.db.profile.configversion < newestconfigversion ) then
@@ -1444,33 +1098,36 @@ function dgks:OnInitialize()
 	-- Setup Config Screens
 	local AceConfigRegistry = LibStub("AceConfigRegistry-3.0")
 
-	AceConfigRegistry:RegisterOptionsTable("dG KillShot", giveOptions)
-	AceConfigRegistry:RegisterOptionsTable("dG KillShot General", giveGeneral)
-	AceConfigRegistry:RegisterOptionsTable("dG KillShot Broadcasts", giveBroadcasts)
-	AceConfigRegistry:RegisterOptionsTable("dG KillShot Screenshots", giveScreenshots)
-	AceConfigRegistry:RegisterOptionsTable("dG KillShot Duels", giveDuels)
-	AceConfigRegistry:RegisterOptionsTable("dG KillShot Ranks", giveRanks)
+	-- The dG KillShot window (dgks_history_ui.lua) draws the Overview and Settings tables in its tabs
+	AceConfigRegistry:RegisterOptionsTable("dG KillShot Overview", giveOverview)
+	AceConfigRegistry:RegisterOptionsTable("dG KillShot Settings", giveSettings)
 	AceConfigRegistry:RegisterOptionsTable("dG KillShot File Setup", giveSoundFileSetup)
-	AceConfigRegistry:RegisterOptionsTable("dG KillShot Output", giveOutput)	
-	
-	local AceConfigDialog = LibStub("AceConfigDialog-3.0")
-	
-	local ref, cat = AceConfigDialog:AddToBlizOptions("dG KillShot", "dG KillShot")
-	AceConfigDialog:AddToBlizOptions("dG KillShot General", "General", "dG KillShot")
-	AceConfigDialog:AddToBlizOptions("dG KillShot Broadcasts", "Broadcasts", "dG KillShot")
-	AceConfigDialog:AddToBlizOptions("dG KillShot Screenshots", "Screenshots", "dG KillShot")
-	AceConfigDialog:AddToBlizOptions("dG KillShot Duels", "Duels", "dG KillShot")
-	AceConfigDialog:AddToBlizOptions("dG KillShot Ranks", "Ranks", "dG KillShot")
-	-- Clean up UI
-	-- AceConfigDialog:AddToBlizOptions("dG KillShot File Setup", "Sound File Setup", "dG KillShot")
-	AceConfigDialog:AddToBlizOptions("dG KillShot Output", "Combat Text Output", "dG KillShot")
 
-	
-	-- Cannot get ACECONSOLE working correctly in latest versions so I do it the old fashioned way	
+	-- Blizzard's Settings panel gets one page that opens the window
+	AceConfigRegistry:RegisterOptionsTable("dG KillShot", giveLauncher)
+	LibStub("AceConfigDialog-3.0"):AddToBlizOptions("dG KillShot", "dG KillShot")
+
+	-- Cannot get ACECONSOLE working correctly in latest versions so I do it the old fashioned way
+	-- /dgks              toggle the dG KillShot window
+	-- /dgks history      the window on its History tab
+	-- /dgks settings     the window on its Settings tab (also: options, config)
+	-- /dgks deathrecap   reopen the last death recap window
+	-- /dgks recap        print the raw Death Recap of the last death
 	SLASH_DGKS1 = "/dgks"
 	SLASH_DGKS2 = "/ks"
-	SlashCmdList.DGKS = function()
-		Settings.OpenToCategory(cat)
+	SlashCmdList.DGKS = function(msg)
+		local cmd = type(msg) == "string" and msg:lower():match("^%s*(%S*)") or ""
+		if cmd == "history" then
+			dgks:ShowMainWindow("history")
+		elseif cmd == "settings" or cmd == "options" or cmd == "config" then
+			dgks:ShowMainWindow("settings")
+		elseif cmd == "deathrecap" then
+			dgks:ToggleDeathRecap()
+		elseif cmd == "recap" then
+			dgks:DumpRecap()
+		else
+			dgks:ToggleMainWindow()
+		end
 	end
 
 	-- Setup Comms
@@ -1478,6 +1135,19 @@ function dgks:OnInitialize()
 	self:RegisterComm("dgksV") --Version check
 	self:RegisterComm("dgksVR") --Version check responses
 	self:RegisterComm("dgksDUEL") --Duels
+
+	-- Kill and death history (dgks_history.lua)
+	self.History:Initialize()
+end
+
+-- Open the dG KillShot window on its Settings tab
+function dgks:OpenOptions()
+	dgks:ShowMainWindow("settings")
+end
+
+-- Current killing streak and death streak, for the minimap button tooltip
+function dgks:GetStreaks()
+	return streak, deathstreak
 end
 
 function dgks:SoundEventHandler(info, sound)
@@ -1521,6 +1191,10 @@ function dgks:CombatLogEventHandler(info, timestamp, event, hideCaster, sourceGU
 				
 				-- The player has landed a killshot
 				self:KillshotTX(destName, timestamp, destGUID)
+			elseif bit.band(destFlags, COMBATLOG_OBJECT_TYPE_PLAYER) == COMBATLOG_OBJECT_TYPE_PLAYER
+				and isGroupMember(sourceGUID) and not isGroupMember(destGUID) then
+				-- A party or raid member landed the killing blow on another player: a team kill
+				dgks.History:RecordTeamKill(sourceGUID, destGUID)
 			end
 		end
 	end
@@ -1620,6 +1294,7 @@ function dgks:KillshotTX(txvictim,txtimestamp,txvictimGUID)
 	-- Handle it locally first: sounds and text must not depend on our own broadcast coming back
 	-- (it does not when we are in no guild or group, or when addon messages are locked down).
 	self:ProcessKillshot("dgks", playerName, txvictim, txtimestamp, streak, multikill, true)
+	self.History:Record("K", txvictim, txvictimGUID, streak, multikill)
 
 	-- Then broadcast our Killshot to other dgks users. Our own echo is dropped in OnCommReceived.
 	self:SendCM("dgks",dgks:Serialize(playerName,txvictim,txtimestamp,streak,multikill))
@@ -1636,6 +1311,7 @@ function dgks:DuelTX(txvictim,txtimestamp)
 	-- Handle it locally first (see KillshotTX), then broadcast our duel win.
 	-- A duel is never a multikill: the multikill counter belongs to the last killshot, so send 0.
 	self:ProcessKillshot("dgksDUEL", playerName, txvictim, txtimestamp, streak, 0, true)
+	self.History:Record("W", txvictim, nil, streak, 0)
 	self:SendCM("dgksDUEL",dgks:Serialize(playerName,txvictim,txtimestamp,streak,0))
 end
 
@@ -1653,6 +1329,7 @@ function dgks:PlayerLoss(myKiller)
 	if not dgks.db.profile.deathList[myKiller] then dgks.db.profile.deathList[myKiller] = {} end
 	tinsert(dgks.db.profile.deathList[myKiller], date("%m/%d/%y %H:%M:%S"))
 	if (dgks.db.profile.dochatbox) then dgks:Print("You been defeated by "..myKiller.." "..#dgks.db.profile.deathList[myKiller].." times.") end
+	dgks.History:Record("L", myKiller)
 	if dgks.db.profile.doscreenshotonduelloss then Screenshot() end
 	if dgks.db.profile.duelemoteloss ~= "none" then
 		DoEmote(dgks.db.profile.duelemoteloss, myKiller)
@@ -1817,7 +1494,9 @@ function dgks:ProcessKillshot(cchan, rxkiller, rxvictim, rxtimestamp, rxstreak, 
 	end
 end
 
-function dgks:PlayerDeath(myKiller)
+-- flags: nil, { unknown = true } (myKiller is a reason, not a name) or { guessed = n } (a likely
+-- killer out of n candidates). guid: the killer's GUID when known.
+function dgks:PlayerDeath(myKiller, flags, guid)
 	streak = 0;
 	deathstreak = deathstreak + 1;
 	if (deathstreak > dgks.db.profile.maxdeathstreak) then dgks.db.profile.maxdeathstreak = deathstreak end
@@ -1830,36 +1509,121 @@ function dgks:PlayerDeath(myKiller)
 	-- If deathList doesn't exist create it
 	if not dgks.db.profile.deathList[myKiller] then dgks.db.profile.deathList[myKiller] = {} end
 	tinsert(dgks.db.profile.deathList[myKiller], date("%m/%d/%y %H:%M:%S"))
-	if (dgks.db.profile.dochatbox) then dgks:Print("You been murdered by "..myKiller.." "..#dgks.db.profile.deathList[myKiller].." times.") end
+	if (dgks.db.profile.dochatbox) then
+		if flags and flags.unknown then
+			dgks:Print("You died. Killer unknown: " .. myKiller .. ".")
+		elseif flags and flags.guessed then
+			dgks:Print("You were likely killed by " .. myKiller .. ".")
+		else
+			dgks:Print("You been murdered by "..myKiller.." "..#dgks.db.profile.deathList[myKiller].." times.")
+		end
+	end
+	local rec = dgks.History:Record("D", myKiller, guid, nil, nil, flags)
+	local recapKiller = myKiller
+	if flags and flags.unknown then
+		recapKiller = "killer unknown (" .. myKiller .. ")"
+	elseif flags and flags.guessed then
+		recapKiller = "likely killed by " .. myKiller
+	else
+		recapKiller = "killed by " .. myKiller
+	end
+	pcall(dgks.ShowDeathRecap, dgks, recapKiller, rec)
 	if dgks.db.profile.doscreenshotondeath then Screenshot() end
 end
 
--- Returns the name of whoever killed the player according to Blizzard's Death Recap, or nil if the
--- recap is empty/unavailable or the name is a secret value (which cannot be stored or compared).
--- Prefers the event flagged as the killing blow (overkill >= 0), otherwise the most recent event.
+-- Who killed the player, according to Blizzard's Death Recap (the only source on retail/Forever,
+-- where the combat log is closed to addons). Read it the way Blizzard's own Death Recap frame does:
+-- the first event is the one that caused the death, and its caster is hidden when hideCaster is set.
+-- Returns name, reason. reason is one of:
+--   "found"        name is the killer
+--   "pending"      no recap yet; it may still be filled in, so try again shortly
+--   "unavailable"  this client has no Death Recap
+--   "secret"       the game hides the killer from addons here (dungeons, raids, PvP matches...)
+--   "hidden"       the killing blow has no visible caster
+--   "environment"  no attacker at all: falling, drowning, lava and the like
 function dgks:GetRecapKiller()
-	if not (C_DeathRecap and C_DeathRecap.GetRecapEvents) then return nil end
-	local ok, events = pcall(C_DeathRecap.GetRecapEvents)
-	if not ok or type(events) ~= "table" or #events == 0 then return nil end
-
-	local function usable(v, wantType)
-		return type(v) == wantType and not isSecret(v)
+	if not (C_DeathRecap and C_DeathRecap.GetRecapEvents) then return nil, "unavailable" end
+	if C_DeathRecap.HasRecapEvents then
+		local ok, has = pcall(C_DeathRecap.HasRecapEvents)
+		if ok and not isSecret(has) and has == false then return nil, "pending" end
 	end
+	local ok, events = pcall(C_DeathRecap.GetRecapEvents)
+	if not ok or events == nil then return nil, "pending" end
+	if isSecret(events) then return nil, "secret" end
+	if type(events) ~= "table" then return nil, "pending" end
+	local ev = events[1]
+	if ev == nil then return nil, "pending" end
+	if isSecret(ev) then return nil, "secret" end
+	if type(ev) ~= "table" then return nil, "pending" end
 
-	local best, bestTime
-	for i, ev in ipairs(events) do
-		if type(ev) == "table" then
-			local overkill = usable(ev.overkill, "number") and ev.overkill or -1
-			if overkill >= 0 then best = ev break end
-			local t = usable(ev.timestamp, "number") and ev.timestamp or i
-			if not bestTime or t >= bestTime then best, bestTime = ev, t end
+	local hide = ev.hideCaster
+	if isSecret(hide) then return nil, "secret" end
+	if hide == true then return nil, "hidden" end
+
+	local name = ev.sourceName
+	if isSecret(name) then return nil, "secret" end
+	if type(name) == "string" and name ~= "" then return name, "found" end
+	return nil, "environment"
+end
+
+-- What to record as the killer when the recap does not name one. History marks these as unknown,
+-- so they stay out of Top predators and the opponent lists.
+dgks.UNKNOWN_KILLER_TEXT = {
+	pending = "No death recap",
+	unavailable = "No death recap",
+	secret = "Hidden by the game",
+	hidden = "Hidden attacker",
+	environment = "Environment",
+}
+
+-- /dgks recap: print the raw Death Recap of the last death, to see what the game gives addons here.
+-- Hidden (secret) values are reported as such, never compared or stored.
+function dgks:DumpRecap()
+	local function show(v)
+		if isSecret(v) then return "<hidden by the game>" end
+		if type(v) == "string" then return '"' .. v .. '"' end
+		return tostring(v)
+	end
+	local _, instanceType = IsInInstance()
+	self:Print(("Death Recap - zone: %s, instance type: %s"):format(show(GetRealZoneText()), show(instanceType)))
+	if not (C_DeathRecap and C_DeathRecap.GetRecapEvents) then
+		self:Print("This client has no Death Recap API.")
+		return
+	end
+	if C_DeathRecap.HasRecapEvents then
+		local ok, has = pcall(C_DeathRecap.HasRecapEvents)
+		self:Print("HasRecapEvents: " .. (ok and show(has) or ("error: " .. tostring(has))))
+	end
+	local ok, events = pcall(C_DeathRecap.GetRecapEvents)
+	if not ok then
+		self:Print("GetRecapEvents error: " .. tostring(events))
+		return
+	end
+	if isSecret(events) or type(events) ~= "table" then
+		self:Print("GetRecapEvents returned " .. show(events))
+		return
+	end
+	local count = 0
+	for i = 1, 10 do
+		local ev = events[i]
+		if ev == nil then break end
+		count = i
+		if isSecret(ev) or type(ev) ~= "table" then
+			self:Print(("Event %d: %s"):format(i, show(ev)))
+		else
+			local keys = {}
+			for k in pairs(ev) do
+				if not isSecret(k) and type(k) == "string" then keys[#keys + 1] = k end
+			end
+			table.sort(keys)
+			local parts = {}
+			for _, k in ipairs(keys) do parts[#parts + 1] = k .. "=" .. show(ev[k]) end
+			self:Print(("Event %d%s: %s"):format(i, i == 1 and " (caused death)" or "", table.concat(parts, ", ")))
 		end
 	end
-	if not best then return nil end
-	if usable(best.sourceName, "string") and best.sourceName ~= "" then
-		return best.sourceName
-	end
-	return nil
+	if count == 0 then self:Print("No recap events (no death yet this session, or nothing recorded).") end
+	local killer, reason = self:GetRecapKiller()
+	self:Print(("dgks reads this as: %s (%s)"):format(killer or dgks.UNKNOWN_KILLER_TEXT[reason] or "?", reason))
 end
 
 function dgks:GetKillshotSound(streak)
@@ -2150,6 +1914,14 @@ end
 if classic then 
 	function events:COMBAT_LOG_EVENT_UNFILTERED(info, event, ...)
 		local timestamp, event, hideCaster, sourceGUID, sourceName, sourceFlags, sourceFlags2, destGUID, destName, destFlags, destFlags2 = CombatLogGetCurrentEventInfo()
+		-- Keep the last seconds of damage we take for the death recap window (dgks_deathrecap.lua)
+		if destGUID == playerGUID then pcall(dgks.TrackDamageTaken, dgks, CombatLogGetCurrentEventInfo()) end
+		-- Remember the players we fight, so kill and death records can name their class (dgks_players.lua)
+		if destGUID == playerGUID then
+			dgks.Players:NoteCombatant(sourceGUID, sourceName)
+		elseif sourceGUID == playerGUID then
+			dgks.Players:NoteCombatant(destGUID, destName)
+		end
 		dgks:CombatLogEventHandler(info, timestamp, event, hideCaster, sourceGUID, sourceName, sourceFlags, sourceFlags2, destGUID, destName, destFlags, destFlags2, ...)
 	end 
 	else
@@ -2183,8 +1955,79 @@ if classic then
 				--@end-debug@
 				dgks:KillshotTX(vName, timestamp, targetGUID)
 			end
+		elseif attackerGUID ~= playerGUID and dgks:TargetCheck(targetGUID)
+			and isGroupMember(attackerGUID) and not isGroupMember(targetGUID) then
+			-- A party or raid member landed the killing blow on another player: a team kill
+			dgks.History:RecordTeamKill(attackerGUID, targetGUID)
 		end --if attackerGUID
 	end
+	-- Likely killer, for deaths the Death Recap cannot name: an enemy player who is targeting us when
+	-- we die, or who switched their target to us in the last few seconds. Right in a 1v1, a guess in
+	-- a group fight. Where the game hides unit comparisons (dungeons, raids) nothing is found.
+	local recentTargeters = {} -- [Name-Realm] = { t = GetTime(), guid = guid }
+	local GUESS_WINDOW = 8 -- seconds
+	local guessUnits = { "target", "focus", "mouseover", "softenemy" }
+	for i = 1, 40 do guessUnits[#guessUnits + 1] = "nameplate" .. i end
+	for i = 1, 5 do guessUnits[#guessUnits + 1] = "arena" .. i end
+
+	-- Calls fn and returns its first result, or nil if it failed or is hidden from addons
+	local function readable(fn, ...)
+		local ok, v = pcall(fn, ...)
+		if not ok or isSecret(v) then return nil end
+		return v
+	end
+
+	-- If unit is an enemy player whose target is us, returns their "Name-Realm" and GUID
+	local function enemyTargetingMe(unit)
+		if readable(UnitExists, unit) ~= true then return nil end
+		if readable(UnitIsPlayer, unit) ~= true then return nil end
+		if readable(UnitCanAttack, "player", unit) ~= true then return nil end
+		-- Is their target us? Compare GUIDs: UnitIsUnit on a compound token ("nameplate3target") always
+		-- returns a secret on retail, while UnitGUID stays readable along a chain of player-controlled units.
+		local targetGUID = readable(UnitGUID, unit .. "target")
+		if type(targetGUID) ~= "string" or targetGUID ~= UnitGUID("player") then return nil end
+		local ok, name, realm = pcall(UnitFullName, unit)
+		if not ok or isSecret(name) or type(name) ~= "string" or name == "" then return nil end
+		if isSecret(realm) or type(realm) ~= "string" or realm == "" then realm = GetNormalizedRealmName() end
+		local guid = readable(UnitGUID, unit)
+		return name .. "-" .. realm, (type(guid) == "string") and guid or nil
+	end
+
+	function events:UNIT_TARGET(unit)
+		if not dgks.db.profile.guessKiller or isSecret(unit) or type(unit) ~= "string" then return end
+		local name, guid = enemyTargetingMe(unit)
+		if name then recentTargeters[name] = { t = GetTime(), guid = guid } end
+	end
+
+	-- Returns the likely killer's name, GUID and how many enemies were candidates, or nil
+	local function guessKiller()
+		local now, found, count = GetTime(), {}, 0
+		for _, unit in ipairs(guessUnits) do
+			local name, guid = enemyTargetingMe(unit)
+			if name and not found[name] then
+				local seen = recentTargeters[name]
+				found[name] = { guid = guid, t = seen and seen.t or 0, current = true }
+				count = count + 1
+			end
+		end
+		for name, seen in pairs(recentTargeters) do
+			if not found[name] and now - seen.t <= GUESS_WINDOW then
+				found[name] = { guid = seen.guid, t = seen.t, current = false }
+				count = count + 1
+			end
+		end
+		wipe(recentTargeters)
+		-- Prefer someone still targeting us; among those, whoever turned to us last
+		local bestName, best
+		for name, c in pairs(found) do
+			if not best or (c.current and not best.current) or (c.current == best.current and c.t > best.t) then
+				bestName, best = name, c
+			end
+		end
+		if not best then return nil end
+		return bestName, best.guid, count
+	end
+
 	local deathPending = false
 	function events:PLAYER_DEAD()
 		-- We have died. PLAYER_DEAD fires once per death and carries nothing to compare, so it also works
@@ -2194,15 +2037,28 @@ if classic then
 		if deathPending then return end
 		deathPending = true
 		streak = 0
+		-- Look for a likely killer now, while the enemies around us still have us targeted
+		local guessName, guessGUID, guessCount
+		if dgks.db.profile.guessKiller then
+			local ok, n, g, c = pcall(guessKiller)
+			if ok then guessName, guessGUID, guessCount = n, g, c end
+		end
 		local attempts = 0
 		local function resolveKiller()
 			attempts = attempts + 1
 			-- A failing lookup must not leave deathPending set, or later deaths would be ignored
-			local ok, killer = pcall(dgks.GetRecapKiller, dgks)
-			if not ok then killer = nil end
-			if killer or attempts >= 4 then
+			local ok, killer, reason = pcall(dgks.GetRecapKiller, dgks)
+			if not ok then killer, reason = nil, "pending" end
+			-- Only an empty recap is worth waiting for; give it up to 5 seconds
+			if reason ~= "pending" or attempts >= 10 then
 				deathPending = false
-				dgks:PlayerDeath(killer or "Unknown because of retail")
+				if killer then
+					dgks:PlayerDeath(killer)
+				elseif guessName and reason ~= "environment" then
+					dgks:PlayerDeath(guessName, { guessed = guessCount }, guessGUID)
+				else
+					dgks:PlayerDeath(dgks.UNKNOWN_KILLER_TEXT[reason] or "No death recap", { unknown = true })
+				end
 			else
 				C_Timer.After(0.5, resolveKiller)
 			end
@@ -2304,6 +2160,10 @@ function dgks:OnEnable()
 	--Setup variables
 	playerGUID = UnitGUID("player")
 	playerClass, _, playerRace, playerSex, _, playerName, _ = GetPlayerInfoByGUID(playerGUID)
+
+	self.History:Enable()
+	self.Players:Enable()
+	self:SetupMinimapButton()
 
 	--@debug@
 	dgks:Print("DEBUG:OnEnable:playerName: " .. playerName .. " playerGUID: " .. playerGUID)
