@@ -1420,6 +1420,8 @@ local defaults = {
 		sink20Sticky = true,
 		sink20OutputSink = "Default",
 		sink20ScrollArea = "Outgoing",
+		historyShare = true, -- Share our kills and deaths with the guild history
+		historyRetentionDays = 90, -- Guild history older than this is pruned; personal history is kept
 	},
 }
 
@@ -1469,7 +1471,11 @@ function dgks:OnInitialize()
 	-- Cannot get ACECONSOLE working correctly in latest versions so I do it the old fashioned way	
 	SLASH_DGKS1 = "/dgks"
 	SLASH_DGKS2 = "/ks"
-	SlashCmdList.DGKS = function()
+	SlashCmdList.DGKS = function(msg)
+		if type(msg) == "string" and msg:lower():match("^%s*history") then
+			dgks.History:ToggleWindow()
+			return
+		end
 		Settings.OpenToCategory(cat)
 	end
 
@@ -1478,6 +1484,9 @@ function dgks:OnInitialize()
 	self:RegisterComm("dgksV") --Version check
 	self:RegisterComm("dgksVR") --Version check responses
 	self:RegisterComm("dgksDUEL") --Duels
+
+	-- Kill and death history (dgks_history.lua)
+	self.History:Initialize()
 end
 
 function dgks:SoundEventHandler(info, sound)
@@ -1620,6 +1629,7 @@ function dgks:KillshotTX(txvictim,txtimestamp,txvictimGUID)
 	-- Handle it locally first: sounds and text must not depend on our own broadcast coming back
 	-- (it does not when we are in no guild or group, or when addon messages are locked down).
 	self:ProcessKillshot("dgks", playerName, txvictim, txtimestamp, streak, multikill, true)
+	self.History:Record("K", txvictim, txvictimGUID, streak, multikill)
 
 	-- Then broadcast our Killshot to other dgks users. Our own echo is dropped in OnCommReceived.
 	self:SendCM("dgks",dgks:Serialize(playerName,txvictim,txtimestamp,streak,multikill))
@@ -1636,6 +1646,7 @@ function dgks:DuelTX(txvictim,txtimestamp)
 	-- Handle it locally first (see KillshotTX), then broadcast our duel win.
 	-- A duel is never a multikill: the multikill counter belongs to the last killshot, so send 0.
 	self:ProcessKillshot("dgksDUEL", playerName, txvictim, txtimestamp, streak, 0, true)
+	self.History:Record("W", txvictim, nil, streak, 0)
 	self:SendCM("dgksDUEL",dgks:Serialize(playerName,txvictim,txtimestamp,streak,0))
 end
 
@@ -1653,6 +1664,7 @@ function dgks:PlayerLoss(myKiller)
 	if not dgks.db.profile.deathList[myKiller] then dgks.db.profile.deathList[myKiller] = {} end
 	tinsert(dgks.db.profile.deathList[myKiller], date("%m/%d/%y %H:%M:%S"))
 	if (dgks.db.profile.dochatbox) then dgks:Print("You been defeated by "..myKiller.." "..#dgks.db.profile.deathList[myKiller].." times.") end
+	dgks.History:Record("L", myKiller)
 	if dgks.db.profile.doscreenshotonduelloss then Screenshot() end
 	if dgks.db.profile.duelemoteloss ~= "none" then
 		DoEmote(dgks.db.profile.duelemoteloss, myKiller)
@@ -1831,6 +1843,7 @@ function dgks:PlayerDeath(myKiller)
 	if not dgks.db.profile.deathList[myKiller] then dgks.db.profile.deathList[myKiller] = {} end
 	tinsert(dgks.db.profile.deathList[myKiller], date("%m/%d/%y %H:%M:%S"))
 	if (dgks.db.profile.dochatbox) then dgks:Print("You been murdered by "..myKiller.." "..#dgks.db.profile.deathList[myKiller].." times.") end
+	dgks.History:Record("D", myKiller)
 	if dgks.db.profile.doscreenshotondeath then Screenshot() end
 end
 
@@ -2304,6 +2317,8 @@ function dgks:OnEnable()
 	--Setup variables
 	playerGUID = UnitGUID("player")
 	playerClass, _, playerRace, playerSex, _, playerName, _ = GetPlayerInfoByGUID(playerGUID)
+
+	self.History:Enable()
 
 	--@debug@
 	dgks:Print("DEBUG:OnEnable:playerName: " .. playerName .. " playerGUID: " .. playerGUID)
