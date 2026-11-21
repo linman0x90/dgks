@@ -5,6 +5,7 @@
 
 local dgks = dgks
 local ICON = "Interface\\Icons\\INV_Misc_Bone_HumanSkull_01"
+local MASK = "Interface\\CharacterFrame\\TempPortraitAlphaMask"
 
 local button
 
@@ -86,11 +87,13 @@ local function createButton()
 	background:SetSize(20, 20)
 	background:SetPoint("CENTER")
 
+	-- The icon is masked to a circle so it sits round inside the ring like the game's own buttons
 	local icon = button:CreateTexture(nil, "ARTWORK")
 	icon:SetTexture(ICON)
-	icon:SetSize(18, 18)
+	icon:SetSize(20, 20)
 	icon:SetPoint("CENTER")
-	icon:SetTexCoord(0.07, 0.93, 0.07, 0.93)
+	icon:SetTexCoord(0.05, 0.95, 0.05, 0.95)
+	if icon.SetMask then pcall(icon.SetMask, icon, MASK) end
 	button.icon = icon
 
 	local border = button:CreateTexture(nil, "OVERLAY")
@@ -111,8 +114,8 @@ local function createButton()
 		self:UnlockHighlight()
 	end)
 	-- Show the icon pressed while the mouse button is down
-	button:SetScript("OnMouseDown", function() icon:SetPoint("CENTER", 1, -1) end)
-	button:SetScript("OnMouseUp", function() icon:SetPoint("CENTER") end)
+	button:SetScript("OnMouseDown", function() icon:SetSize(17, 17) end)
+	button:SetScript("OnMouseUp", function() icon:SetSize(20, 20) end)
 end
 
 -- Show or hide the button to match the "Show minimap button" option

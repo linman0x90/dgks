@@ -20,8 +20,10 @@ local lastLocalKillKey -- "victimGUID@timestamp" of the last kill we processed l
 local newestconfigversion = 1
 local frame, events = CreateFrame("Frame"), {}; -- Event Frame
 local damageDealers = {}
+local damageByPlayer = {} -- [name] = whether damageDealers[name] was player-controlled (Classic)
 local targetList = {} -- Used for Execute
 local playerGUID, playerClass, _, playerRace, playerSex, playerName
+local playerFirstName -- Forever: playerName is "First Surname", this is just "First"
 local inArena = false
 local inBG = false
 local lastMessage, lastSender, lastTimestamp --Versionchecking duplicate detection
@@ -64,47 +66,85 @@ end
 
 dgks = LibStub("AceAddon-3.0"):NewAddon("dgks", "AceEvent-3.0", "AceConsole-3.0", "LibSink-2.0","AceComm-3.0","AceSerializer-3.0")
 
--- Overview tab of the dG KillShot window: record and streak tiles, Top 5 lists
-local function giveOverview()
-	local options = {
-		type = "group",
-		name = "Overview",
-		args = {
-			version = {
-				type = "description",
-				name = "|cff9d9d9dVersion " .. version .. "|r\n",
-				order = 2
-			},
-			-- The record tiles and Top 5 lists are added below from dgks_history_ui.lua
-			streak = dgks.History.Tile(15, "Kill streak", streak, "ff40ff40"),
-			maxstreak = dgks.History.Tile(16, "Best streak", dgks.db.profile.maxstreak, "ffffd100"),
-			deathstreak = dgks.History.Tile(17, "Death streak", deathstreak, "ffff4040"),
-			maxdeathstreak = dgks.History.Tile(18, "Worst streak", dgks.db.profile.maxdeathstreak, "ffff8040"),
-			--@debug@
-			-- Dev Debugging functions
-			testdgkskill = {
-				type = 'execute',
-				name = 'Simulate Killshot',
-				order = 90,
-				func = function()
-					dgks:Test()
-				end
-			},
-			testdgdeath = {
-				type = 'execute',
-				name = 'Simulate Death',
-				order = 91,
-				func = function()
-					dgks:TestPlayerDeath()
-				end
-			}
-			--@end-debug@
-		}
-	}
-	for key, option in pairs(dgks.History:MainOptionArgs(10)) do
-		options.args[key] = option
+-- Shown in the dG KillShot window
+dgks.version = version
+
+-- Forever: characters have a first name and a surname, and names are unique across the region.
+-- The name functions (UnitName, UnitFullName, GetPlayerInfoByGUID, UnitNameFromGUID) hand the
+-- surname back where other clients put the realm. dgks always uses the whole name there.
+function dgks.UsesSurnames()
+	if type(RegionalUniqueNamesEnabled) ~= "function" then return false end
+	local ok, on = pcall(RegionalUniqueNamesEnabled)
+	return ok and on == true
+end
+
+local function surnameSeparator()
+	local c = Constants and Constants.CharacterNameSeparatorConsts
+	local sep = c and c.CHARACTERNAME_SURNAME_SEPARATOR
+	if type(sep) == "string" and sep ~= "" then return sep end
+	return " "
+end
+
+-- A name function's two results -> the character's name and realm. On Forever the name is
+-- "First Surname" and there is no realm; elsewhere the name is unchanged and the second result is
+-- the realm (nil when empty). Returns nil for a missing or secret name.
+function dgks.SplitName(name, second)
+	if isSecret(name) or type(name) ~= "string" or name == "" then return nil end
+	if isSecret(second) or type(second) ~= "string" or second == "" then second = nil end
+	if dgks.UsesSurnames() then
+		local sep = surnameSeparator()
+		if second and not name:find(sep, 1, true) then name = name .. sep .. second end
+		return name, nil
 	end
-	return options
+	return name, second
+end
+
+-- This character's name: "First Surname" on Forever, the plain name elsewhere
+function dgks.PlayerFullName()
+	return dgks.SplitName(UnitName("player"))
+end
+
+-- PvP or PvE? History records kills and deaths involving other players. Kills of NPCs and deaths
+-- to NPCs or the environment are recorded only with the "Also log PvE kills and deaths" option.
+local function inPvPInstance()
+	local ok, _, instanceType = pcall(IsInInstance)
+	return ok and not isSecret(instanceType) and (instanceType == "pvp" or instanceType == "arena")
+end
+
+local function isPlayerGUID(guid)
+	return type(guid) == "string" and not isSecret(guid) and guid:find("^Player%-") ~= nil
+end
+
+-- Does history keep PvE kills and deaths?
+function dgks:LogsPvE()
+	return dgks.db.profile.historyPve == true
+end
+
+-- Was this death at the hands of another player? isPlayer: what the combat log said (Classic).
+-- On retail the Death Recap gives only a name: a likely killer is always an enemy player, a GUID
+-- says so outright, and a name we saw on a player nearby is one. Otherwise only a battleground or
+-- arena makes it PvP (that is also the only place an unknown killer counts).
+function dgks:KilledByPlayer(killer, flags, guid, isPlayer)
+	if isPlayer ~= nil then return isPlayer == true end
+	if flags and flags.guessed then return true end
+	if type(guid) == "string" and not isSecret(guid) then return isPlayerGUID(guid) end
+	if flags and flags.unknown then return inPvPInstance() end
+	if type(killer) == "string" and not isSecret(killer) and dgks.Players then
+		local ok, seen = pcall(dgks.Players.Lookup, dgks.Players, killer)
+		if ok and seen then return true end
+	end
+	return inPvPInstance()
+end
+
+-- Record a PvE kill in history without any announcement (the option is on, NPC killshots are off)
+local lastPvEKill, lastPvEKillAt -- one death can reach us twice (PARTY_KILL and a pet's UNIT_DIED)
+local function recordPvEKill(name, guid)
+	if not dgks:LogsPvE() or isSecret(name) or type(name) ~= "string" or name == "" then return end
+	if isSecret(guid) then guid = nil end
+	local key = guid or name
+	if key == lastPvEKill and GetTime() - lastPvEKillAt < 2 then return end
+	lastPvEKill, lastPvEKillAt = key, GetTime()
+	dgks.History:Record("K", name, guid)
 end
 
 -- Settings > History tab: history options, then the reset and clear buttons
@@ -167,6 +207,16 @@ local function giveGeneral()
 				get = function() return dgks.db.profile.deathRecap end,
 				set = function(info, v) dgks.db.profile.deathRecap = v end,
 				order = 2,
+				width = "full"
+			},
+			deathRecapCompact = {
+				type = 'toggle',
+				name = 'Compact death recap',
+				desc = 'Show only the killing blow and the three attackers who did the most damage. Switch between this and the full list with the button in the recap window.',
+				get = function() return dgks.db.profile.deathRecapCompact end,
+				set = function(info, v) dgks.db.profile.deathRecapCompact = v end,
+				disabled = function() return not dgks.db.profile.deathRecap end,
+				order = 2.5,
 				width = "full"
 			},
 			minimapButton = {
@@ -1070,8 +1120,10 @@ local defaults = {
 		minimap = { hide = false, angle = 200 }, -- Minimap button (dgks_minimap.lua)
 		guessKiller = true, -- When the Death Recap cannot name the killer, record the likely one
 		deathRecap = true, -- Open the death recap window when we die (dgks_deathrecap.lua)
+		deathRecapCompact = false, -- Death recap shows only the killing blow and the top attackers
 		inspectSpecs = true, -- Inspect nearby enemy players to learn their spec (dgks_players.lua)
 		recordTeamKills = true, -- Record party and raid members' killing blows on players (team kills)
+		historyPve = false, -- Also record kills of NPCs and deaths to NPCs or the environment in history
 	},
 }
 
@@ -1098,8 +1150,7 @@ function dgks:OnInitialize()
 	-- Setup Config Screens
 	local AceConfigRegistry = LibStub("AceConfigRegistry-3.0")
 
-	-- The dG KillShot window (dgks_history_ui.lua) draws the Overview and Settings tables in its tabs
-	AceConfigRegistry:RegisterOptionsTable("dG KillShot Overview", giveOverview)
+	-- The dG KillShot window (dgks_window.lua) draws the Settings table in its Settings tab
 	AceConfigRegistry:RegisterOptionsTable("dG KillShot Settings", giveSettings)
 	AceConfigRegistry:RegisterOptionsTable("dG KillShot File Setup", giveSoundFileSetup)
 
@@ -1196,6 +1247,9 @@ function dgks:CombatLogEventHandler(info, timestamp, event, hideCaster, sourceGU
 				-- A party or raid member landed the killing blow on another player: a team kill
 				dgks.History:RecordTeamKill(sourceGUID, destGUID)
 			end
+		elseif sourceGUID == UnitGUID("player") then
+			-- Our kill of an NPC, with NPC killshots off: history only, when PvE logging is on
+			recordPvEKill(destName, destGUID)
 		end
 	end
 	-- Check for player death by pet
@@ -1203,8 +1257,8 @@ function dgks:CombatLogEventHandler(info, timestamp, event, hideCaster, sourceGU
 	if event == "UNIT_DIED" then
 		if destName == playerName then
 			-- Player has died
-			local myKiller = damageDealers[destName]			
-			self:PlayerDeath(myKiller)
+			local myKiller = damageDealers[destName]
+			self:PlayerDeath(myKiller, nil, nil, damageByPlayer[destName] == true)
 			-- Test is probably broken
 		elseif bit.band(destFlags, COMBATLOG_OBJECT_TYPE_PLAYER) == COMBATLOG_OBJECT_TYPE_PLAYER or dgks.db.profile.dopve or destName == "Test-Victim" then
 				if damageDealers[destName] == "PlayerPet" then
@@ -1217,6 +1271,9 @@ function dgks:CombatLogEventHandler(info, timestamp, event, hideCaster, sourceGU
 				-- The player has landed a killshot,this detection method is fooled by Feign Death so we do PARTY_KILL ALSO
 				self:KillshotTX(destName, timestamp, destGUID)
 			end
+		elseif damageDealers[destName] == "PlayerPet" then
+			-- Our pet killed an NPC, with NPC killshots off: history only, when PvE logging is on
+			recordPvEKill(destName, destGUID)
 		end
 	end
 	
@@ -1226,6 +1283,8 @@ function dgks:CombatLogEventHandler(info, timestamp, event, hideCaster, sourceGU
 		-- This worked, but we need to superate pets -- if sourceName ~= playerName and bit.band(sourceFlags, COMBATLOG_OBJECT_AFFILIATION_MINE) > 0 then sourceName = playerName end
 		if sourceName ~= playerName and bit.band(sourceFlags, COMBATLOG_OBJECT_AFFILIATION_MINE) > 0 then sourceName = "PlayerPet" end
 		damageDealers[destName] = sourceName
+		-- Player-controlled: a player or a player's pet or totem (PvP); NPCs and the environment are not
+		damageByPlayer[destName] = bit.band(sourceFlags or 0, COMBATLOG_OBJECT_CONTROL_PLAYER or 0x100) ~= 0
 		
 		-- Check for execute if enabled
 		if dgks.db.profile.doexecutesound or dgks.db.profile.doexecutesoundpve then
@@ -1293,8 +1352,11 @@ function dgks:KillshotTX(txvictim,txtimestamp,txvictimGUID)
 	
 	-- Handle it locally first: sounds and text must not depend on our own broadcast coming back
 	-- (it does not when we are in no guild or group, or when addon messages are locked down).
-	self:ProcessKillshot("dgks", playerName, txvictim, txtimestamp, streak, multikill, true)
-	self.History:Record("K", txvictim, txvictimGUID, streak, multikill)
+	self:ProcessKillshot("dgks", playerName, txvictim, txtimestamp, streak, multikill, true, txvictimGUID)
+	-- NPC killshots (the "Trigger off NPC/PVE Killshots" option) go to history only with PvE logging on
+	if txvictimGUID == nil or isPlayerGUID(txvictimGUID) or self:LogsPvE() then
+		self.History:Record("K", txvictim, txvictimGUID, streak, multikill)
+	end
 
 	-- Then broadcast our Killshot to other dgks users. Our own echo is dropped in OnCommReceived.
 	self:SendCM("dgks",dgks:Serialize(playerName,txvictim,txtimestamp,streak,multikill))
@@ -1332,7 +1394,7 @@ function dgks:PlayerLoss(myKiller)
 	dgks.History:Record("L", myKiller)
 	if dgks.db.profile.doscreenshotonduelloss then Screenshot() end
 	if dgks.db.profile.duelemoteloss ~= "none" then
-		DoEmote(dgks.db.profile.duelemoteloss, myKiller)
+		dgks:EmoteAt(dgks.db.profile.duelemoteloss, nil, myKiller)
 	end
 end
 
@@ -1391,18 +1453,60 @@ end
 -- Ambiguate() strips our own realm.
 function dgks:IsOwnSender(sender)
 	if isSecret(sender) or type(sender) ~= "string" or playerName == nil then return false end
-	if sender == playerName then return true end
+	-- Forever senders may carry the surname or not
+	local function mine(s) return s == playerName or (playerFirstName ~= nil and s == playerFirstName) end
+	if mine(sender) then return true end
 	if type(Ambiguate) == "function" then
 		local ok, short = pcall(Ambiguate, sender, "none")
-		if ok and not isSecret(short) and short == playerName then return true end
+		if ok and not isSecret(short) and mine(short) then return true end
 	end
 	return false
+end
+
+-- Emotes at a player go through a unit token. DoEmote with a name makes the game look the name up,
+-- and a name it cannot find (a player from another realm without the realm, an NPC, "Unknown
+-- Entity") prints "No player named ... is currently playing". When nobody nearby matches, the emote
+-- has no target ("none"), so it never lands on whoever else we have targeted.
+local EMOTE_UNITS = { "target", "focus", "mouseover", "softenemy" }
+for i = 1, 40 do EMOTE_UNITS[#EMOTE_UNITS + 1] = "nameplate" .. i end
+
+-- The names a unit can be written as: "Name", "Name-Realm", and on Forever "First Surname"
+local function unitNames(unit)
+	local ok, name, second = pcall(UnitName, unit)
+	if not ok or isSecret(name) or type(name) ~= "string" then return {} end
+	local names = { [name] = true }
+	local full, realm = dgks.SplitName(name, second)
+	if full then names[full] = true end
+	if full and realm then names[full .. "-" .. realm] = true end
+	return names
+end
+
+local function unitFor(guid, name)
+	if isSecret(guid) then guid = nil end
+	if isSecret(name) or type(name) ~= "string" then name = nil end
+	if not guid and not name then return nil end
+	for _, unit in ipairs(EMOTE_UNITS) do
+		local ok, g = pcall(UnitGUID, unit)
+		if ok and g ~= nil and not isSecret(g) then
+			if guid then
+				if g == guid then return unit end
+			elseif unitNames(unit)[name] then
+				return unit
+			end
+		end
+	end
+	return nil
+end
+
+-- guid and/or name of the player to emote at
+function dgks:EmoteAt(emote, guid, name)
+	DoEmote(emote, unitFor(guid, name) or "none")
 end
 
 -- Handle one killshot ("dgks") or duel result ("dgksDUEL"): play the sound, show the text, do
 -- emotes/screenshots and update the stats. Called directly for our own kills (isLocal = true) and
 -- from OnCommReceived for kills broadcast by other dgks users (isLocal = false).
-function dgks:ProcessKillshot(cchan, rxkiller, rxvictim, rxtimestamp, rxstreak, rxmultikill, isLocal)
+function dgks:ProcessKillshot(cchan, rxkiller, rxvictim, rxtimestamp, rxstreak, rxmultikill, isLocal, victimGUID)
 	-- The values may come from another player's client: ignore anything that is not shaped like a kill
 	if type(rxkiller) ~= "string" or type(rxvictim) ~= "string" or type(rxstreak) ~= "number" or type(rxmultikill) ~= "number" then return end
 	if rxmultikill ~= rxmultikill then return end -- NaN
@@ -1435,7 +1539,7 @@ function dgks:ProcessKillshot(cchan, rxkiller, rxvictim, rxtimestamp, rxstreak, 
 			-- fixme targeting doesn't seem to work with NPCs
 			local emote = dgks.db.profile.doemote
 			-- Defer the emote out of the event handler context to avoid tainting the player
-			C_Timer.After(0, function() DoEmote(emote, rxvictim) end)
+			C_Timer.After(0, function() dgks:EmoteAt(emote, victimGUID, rxvictim) end)
 		end
 	else
 		killshottext = string.gsub(string.gsub(dgks.db.profile.dueltext, "$k", killerText), "$v", victimText)
@@ -1449,7 +1553,7 @@ function dgks:ProcessKillshot(cchan, rxkiller, rxvictim, rxtimestamp, rxstreak, 
 			-- fixme targeting doesn't seem to work with NPCs
 			local emote = dgks.db.profile.duelemotewin
 			-- Defer the emote out of the event handler context to avoid tainting the player
-			C_Timer.After(0, function() DoEmote(emote, rxvictim) end)
+			C_Timer.After(0, function() dgks:EmoteAt(emote, victimGUID, rxvictim) end)
 		end
 	end
 
@@ -1495,8 +1599,9 @@ function dgks:ProcessKillshot(cchan, rxkiller, rxvictim, rxtimestamp, rxstreak, 
 end
 
 -- flags: nil, { unknown = true } (myKiller is a reason, not a name) or { guessed = n } (a likely
--- killer out of n candidates). guid: the killer's GUID when known.
-function dgks:PlayerDeath(myKiller, flags, guid)
+-- killer out of n candidates). guid: the killer's GUID when known. killerIsPlayer: whether the
+-- combat log showed the killing blow coming from a player or their pet (Classic), else nil.
+function dgks:PlayerDeath(myKiller, flags, guid, killerIsPlayer)
 	streak = 0;
 	deathstreak = deathstreak + 1;
 	if (deathstreak > dgks.db.profile.maxdeathstreak) then dgks.db.profile.maxdeathstreak = deathstreak end
@@ -1518,7 +1623,11 @@ function dgks:PlayerDeath(myKiller, flags, guid)
 			dgks:Print("You been murdered by "..myKiller.." "..#dgks.db.profile.deathList[myKiller].." times.")
 		end
 	end
-	local rec = dgks.History:Record("D", myKiller, guid, nil, nil, flags)
+	-- History keeps deaths to players; deaths to NPCs and the environment only with PvE logging on
+	local rec
+	if self:LogsPvE() or self:KilledByPlayer(myKiller, flags, guid, killerIsPlayer) then
+		rec = dgks.History:Record("D", myKiller, guid, nil, nil, flags)
+	end
 	local recapKiller = myKiller
 	if flags and flags.unknown then
 		recapKiller = "killer unknown (" .. myKiller .. ")"
@@ -1837,6 +1946,28 @@ function dgks:SendCM(cchan,msg)
 			--end
 			--@end-debug@
 
+			-- Battle.net friends are whispered by character name. A friend on another realm needs
+			-- "Name-Realm", or the game looks for the name on our realm and prints "No player named
+			-- ... is currently playing". Whispers only reach our realm and its connected realms, so
+			-- friends elsewhere are skipped. On Forever names are unique across the region (no realm).
+			local myRealm = GetNormalizedRealmName and GetNormalizedRealmName()
+			local reachable = {}
+			if myRealm then reachable[myRealm] = true end
+			local getRealms = (C_AutoComplete and C_AutoComplete.GetAutoCompleteRealms) or GetAutoCompleteRealms
+			if getRealms then
+				local ok, realms = pcall(getRealms)
+				if ok and type(realms) == "table" then
+					for _, r in ipairs(realms) do reachable[r] = true end
+				end
+			end
+			local function bnetTarget(game)
+				if dgks.UsesSurnames() then return game.characterName end
+				local realm = type(game.realmName) == "string" and game.realmName:gsub("[%s%-]", "") or ""
+				if realm == "" or realm == myRealm then return game.characterName end
+				if not reachable[realm] then return nil end
+				return game.characterName .. "-" .. realm
+			end
+
 			local totalBFriends, onlineBFriends = BNGetNumFriends()
 			for i = 1, onlineBFriends  do
 				for j = 1, C_BattleNet.GetFriendNumGameAccounts(i) do
@@ -1852,11 +1983,12 @@ function dgks:SendCM(cchan,msg)
 						self:Print("BNET: " .. j .. "Name: " .. game.characterName .. "Realm: " .. game.realmName .. GetRealmName())
 						--@end-debug@
 						--if game.realmName == GetRealmName() and game.factionName == UnitFactionGroup("player") then
-						if game.factionName == UnitFactionGroup("player") then
-							self:SendCommMessage(cchan,msg,"WHISPER",game.characterName)
+						local target = game.factionName == UnitFactionGroup("player") and bnetTarget(game)
+						if target then
+							self:SendCommMessage(cchan,msg,"WHISPER",target)
 
 							--@debug@
-							self:Print("Sending: CChan= " .. cchan .. " " .. msg .. " to WHISPER " .. game.characterName)
+							self:Print("Sending: CChan= " .. cchan .. " " .. msg .. " to WHISPER " .. target)
 							--@end-debug@
 							--C_ChatInfo.SendAddonMessage(prefix, message, "WHISPER", info.name)
 						end
@@ -1947,13 +2079,21 @@ if classic then
 			local _, _, _, _, _, vName, playerServer = GetPlayerInfoByGUID(targetGUID)
 			if vName == nil then
 				--Could be an NPC, if in an instance even we will still get nil
-				vName, playerServer = UnitNameFromGUID(targetGUID)		
+				vName, playerServer = UnitNameFromGUID(targetGUID)
 			end
+			-- Forever: first name and surname
+			if dgks.UsesSurnames() then vName = dgks.SplitName(vName, playerServer) end
 			if vName ~= nil then
 				--@debug@
 				dgks:Print("DEBUG: " .. "Sending "..vName.." and "..timestamp.." to KillshotTX." )
 				--@end-debug@
 				dgks:KillshotTX(vName, timestamp, targetGUID)
+			end
+		elseif attackerGUID == playerGUID then
+			-- Our kill of an NPC, with NPC killshots off: history only, when PvE logging is on
+			if dgks:LogsPvE() and UnitNameFromGUID then
+				local ok, name = pcall(UnitNameFromGUID, targetGUID)
+				if ok then recordPvEKill(name, targetGUID) end
 			end
 		elseif attackerGUID ~= playerGUID and dgks:TargetCheck(targetGUID)
 			and isGroupMember(attackerGUID) and not isGroupMember(targetGUID) then
@@ -1987,8 +2127,10 @@ if classic then
 		local targetGUID = readable(UnitGUID, unit .. "target")
 		if type(targetGUID) ~= "string" or targetGUID ~= UnitGUID("player") then return nil end
 		local ok, name, realm = pcall(UnitFullName, unit)
-		if not ok or isSecret(name) or type(name) ~= "string" or name == "" then return nil end
-		if isSecret(realm) or type(realm) ~= "string" or realm == "" then realm = GetNormalizedRealmName() end
+		if not ok then return nil end
+		name, realm = dgks.SplitName(name, realm) -- Forever: "First Surname", no realm
+		if not name then return nil end
+		if not realm then realm = GetNormalizedRealmName() end
 		local guid = readable(UnitGUID, unit)
 		return name .. "-" .. realm, (type(guid) == "string") and guid or nil
 	end
@@ -2117,30 +2259,41 @@ end
 	if (dgks.db.profile.dopreparesound) then
 		if msg == format(DUEL_COUNTDOWN,3) then dgks:dgks_SoundPack(dgks.db.profile.kssoundP) end
 	end
-	-- Player fled from Duel
-	if strmatch(msg, format(DUEL_WINNER_RETREAT, "(.-%--.-)", playerName)) then
-		if dgks.db.profile.duelhumiliation then dgks:dgks_SoundPack(dgks.db.profile.kssoundH) end
-		opponent = strmatch(msg, format(DUEL_WINNER_RETREAT, "(.-%--.-)", playerName))
-		dgks:PlayerLoss(opponent)
-	--fixme should probably create new msgs for duels in the future
-	-- Opponent fled from Duel
-	elseif strmatch(msg, format(DUEL_WINNER_RETREAT, playerName, "(.-%--.-)")) then
-		opponent = strmatch(msg, format(DUEL_WINNER_RETREAT, playerName, "(.-%--.-)"))
-		dgks:DuelTX(opponent,GetTime())
-	-- Won Duel
-	elseif strmatch(msg, format(DUEL_WINNER_KNOCKOUT, playerName, "(.-%--.-)")) then
-		opponent = strmatch(msg, format(DUEL_WINNER_KNOCKOUT, playerName, "(.-%--.-)"))
-		dgks:DuelTX(opponent,GetTime())
-	-- Lost Duel
-	elseif strmatch(msg, format(DUEL_WINNER_KNOCKOUT, "(.-%--.-)", playerName)) then
-		opponent = strmatch(msg, format(DUEL_WINNER_KNOCKOUT, "(.-%--.-)", playerName))
-		dgks:PlayerLoss(opponent,GetTime())
-	else
-		--@debug@
-		-- Dev Debugging functions - This will print all system messages to the chat window, which is useful for debugging
-		--dgks:Print("DEBUG: " .. msg)
-		--@end-debug@
+	-- Duel results name both players. On Forever the message may use our full name ("First
+	-- Surname") or only our first name, so try the full name first.
+	local names = { playerName }
+	if playerFirstName and playerFirstName ~= playerName then names[2] = playerFirstName end
+	for _, me in ipairs(names) do
+		-- Literal name inside a pattern
+		me = me:gsub("[%^%$%(%)%%%.%[%]%*%+%-%?]", "%%%0")
+		-- Player fled from Duel
+		if strmatch(msg, format(DUEL_WINNER_RETREAT, "(.-%--.-)", me)) then
+			if dgks.db.profile.duelhumiliation then dgks:dgks_SoundPack(dgks.db.profile.kssoundH) end
+			opponent = strmatch(msg, format(DUEL_WINNER_RETREAT, "(.-%--.-)", me))
+			dgks:PlayerLoss(opponent)
+			return
+		--fixme should probably create new msgs for duels in the future
+		-- Opponent fled from Duel
+		elseif strmatch(msg, format(DUEL_WINNER_RETREAT, me, "(.-%--.-)")) then
+			opponent = strmatch(msg, format(DUEL_WINNER_RETREAT, me, "(.-%--.-)"))
+			dgks:DuelTX(opponent,GetTime())
+			return
+		-- Won Duel
+		elseif strmatch(msg, format(DUEL_WINNER_KNOCKOUT, me, "(.-%--.-)")) then
+			opponent = strmatch(msg, format(DUEL_WINNER_KNOCKOUT, me, "(.-%--.-)"))
+			dgks:DuelTX(opponent,GetTime())
+			return
+		-- Lost Duel
+		elseif strmatch(msg, format(DUEL_WINNER_KNOCKOUT, "(.-%--.-)", me)) then
+			opponent = strmatch(msg, format(DUEL_WINNER_KNOCKOUT, "(.-%--.-)", me))
+			dgks:PlayerLoss(opponent,GetTime())
+			return
+		end
 	end
+	--@debug@
+	-- Dev Debugging functions - This will print all system messages to the chat window, which is useful for debugging
+	--dgks:Print("DEBUG: " .. msg)
+	--@end-debug@
 end
 
 function dgks:OnEnable()
@@ -2159,7 +2312,11 @@ function dgks:OnEnable()
 	
 	--Setup variables
 	playerGUID = UnitGUID("player")
-	playerClass, _, playerRace, playerSex, _, playerName, _ = GetPlayerInfoByGUID(playerGUID)
+	local playerSecond
+	playerClass, _, playerRace, playerSex, _, playerName, playerSecond = GetPlayerInfoByGUID(playerGUID)
+	-- On Forever: "First Surname"; keep the first name too, for messages that use it
+	playerFirstName = playerName
+	playerName = dgks.PlayerFullName() or dgks.SplitName(playerName, playerSecond) or playerName
 
 	self.History:Enable()
 	self.Players:Enable()
