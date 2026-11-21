@@ -745,7 +745,7 @@ end
 local function updateStatus()
 	if not frame then return end
 	frame.status:SetText(H.StatusText())
-	local name = UnitName("player") or ""
+	local name = dgks.PlayerFullName() or "" -- Forever: "First Surname"
 	local _, classFile = UnitClass("player")
 	local guild = IsInGuild() and GetGuildInfo("player")
 	frame.subtitle:SetText(classColored(name, classFile) .. (guild and colored("  <" .. guild .. ">", C.label) or ""))

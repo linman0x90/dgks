@@ -310,12 +310,9 @@ local function opponentInfo(rec, guid)
 	if not ok then return end
 	if usable(classFile, "string") and classFile ~= "" then rec.oc = classFile end
 	if usable(raceFile, "string") and raceFile ~= "" then rec.orc = raceFile end
-	if usable(name, "string") and name ~= "" and not rec.o:find("-", 1, true) then
-		if usable(realm, "string") and realm ~= "" then
-			rec.o = name .. "-" .. realm
-		else
-			rec.o = name .. "-" .. myRealm
-		end
+	name, realm = dgks.SplitName(name, realm) -- Forever: "First Surname", no realm
+	if name and not rec.o:find("-", 1, true) then
+		rec.o = name .. "-" .. (realm or myRealm)
 	end
 	local tguid = UnitGUID("target")
 	if usable(tguid, "string") and tguid == guid then
@@ -354,9 +351,10 @@ function H:RecordTeamKill(killerGUID, victimGUID)
 	if not victimGUID:match("^Player%-") then return end
 	local function info(guid)
 		local ok, _, classFile, _, _, _, name, realm = pcall(GetPlayerInfoByGUID, guid)
-		if not ok or not usable(name, "string") or name == "" then return nil end
-		if not usable(realm, "string") or realm == "" then realm = myRealm end
-		return name .. "-" .. realm, usable(classFile, "string") and classFile or nil
+		if not ok then return nil end
+		name, realm = dgks.SplitName(name, realm) -- Forever: "First Surname", no realm
+		if not name then return nil end
+		return name .. "-" .. (realm or myRealm), usable(classFile, "string") and classFile or nil
 	end
 	local killerName, killerClass = info(killerGUID)
 	local victimName = info(victimGUID)
@@ -592,7 +590,7 @@ end
 -- Guild and identity ----------------------------------------------------------------------------
 
 function H:UpdateIdentity()
-	local name = UnitName("player")
+	local name = dgks.PlayerFullName() -- Forever: "First Surname"
 	if usable(name, "string") and name ~= "" and name ~= UNKNOWNOBJECT then
 		myRealm = realmName()
 		myName = name .. "-" .. myRealm

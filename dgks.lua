@@ -22,6 +22,7 @@ local frame, events = CreateFrame("Frame"), {}; -- Event Frame
 local damageDealers = {}
 local targetList = {} -- Used for Execute
 local playerGUID, playerClass, _, playerRace, playerSex, playerName
+local playerFirstName -- Forever: playerName is "First Surname", this is just "First"
 local inArena = false
 local inBG = false
 local lastMessage, lastSender, lastTimestamp --Versionchecking duplicate detection
@@ -66,6 +67,41 @@ dgks = LibStub("AceAddon-3.0"):NewAddon("dgks", "AceEvent-3.0", "AceConsole-3.0"
 
 -- Shown in the dG KillShot window
 dgks.version = version
+
+-- Forever: characters have a first name and a surname, and names are unique across the region.
+-- The name functions (UnitName, UnitFullName, GetPlayerInfoByGUID, UnitNameFromGUID) hand the
+-- surname back where other clients put the realm. dgks always uses the whole name there.
+function dgks.UsesSurnames()
+	if type(RegionalUniqueNamesEnabled) ~= "function" then return false end
+	local ok, on = pcall(RegionalUniqueNamesEnabled)
+	return ok and on == true
+end
+
+local function surnameSeparator()
+	local c = Constants and Constants.CharacterNameSeparatorConsts
+	local sep = c and c.CHARACTERNAME_SURNAME_SEPARATOR
+	if type(sep) == "string" and sep ~= "" then return sep end
+	return " "
+end
+
+-- A name function's two results -> the character's name and realm. On Forever the name is
+-- "First Surname" and there is no realm; elsewhere the name is unchanged and the second result is
+-- the realm (nil when empty). Returns nil for a missing or secret name.
+function dgks.SplitName(name, second)
+	if isSecret(name) or type(name) ~= "string" or name == "" then return nil end
+	if isSecret(second) or type(second) ~= "string" or second == "" then second = nil end
+	if dgks.UsesSurnames() then
+		local sep = surnameSeparator()
+		if second and not name:find(sep, 1, true) then name = name .. sep .. second end
+		return name, nil
+	end
+	return name, second
+end
+
+-- This character's name: "First Surname" on Forever, the plain name elsewhere
+function dgks.PlayerFullName()
+	return dgks.SplitName(UnitName("player"))
+end
 
 -- Settings > History tab: history options, then the reset and clear buttons
 local function giveHistorySettings()
@@ -1361,10 +1397,12 @@ end
 -- Ambiguate() strips our own realm.
 function dgks:IsOwnSender(sender)
 	if isSecret(sender) or type(sender) ~= "string" or playerName == nil then return false end
-	if sender == playerName then return true end
+	-- Forever senders may carry the surname or not
+	local function mine(s) return s == playerName or (playerFirstName ~= nil and s == playerFirstName) end
+	if mine(sender) then return true end
 	if type(Ambiguate) == "function" then
 		local ok, short = pcall(Ambiguate, sender, "none")
-		if ok and not isSecret(short) and short == playerName then return true end
+		if ok and not isSecret(short) and mine(short) then return true end
 	end
 	return false
 end
@@ -1917,8 +1955,10 @@ if classic then
 			local _, _, _, _, _, vName, playerServer = GetPlayerInfoByGUID(targetGUID)
 			if vName == nil then
 				--Could be an NPC, if in an instance even we will still get nil
-				vName, playerServer = UnitNameFromGUID(targetGUID)		
+				vName, playerServer = UnitNameFromGUID(targetGUID)
 			end
+			-- Forever: first name and surname
+			if dgks.UsesSurnames() then vName = dgks.SplitName(vName, playerServer) end
 			if vName ~= nil then
 				--@debug@
 				dgks:Print("DEBUG: " .. "Sending "..vName.." and "..timestamp.." to KillshotTX." )
@@ -1957,8 +1997,10 @@ if classic then
 		local targetGUID = readable(UnitGUID, unit .. "target")
 		if type(targetGUID) ~= "string" or targetGUID ~= UnitGUID("player") then return nil end
 		local ok, name, realm = pcall(UnitFullName, unit)
-		if not ok or isSecret(name) or type(name) ~= "string" or name == "" then return nil end
-		if isSecret(realm) or type(realm) ~= "string" or realm == "" then realm = GetNormalizedRealmName() end
+		if not ok then return nil end
+		name, realm = dgks.SplitName(name, realm) -- Forever: "First Surname", no realm
+		if not name then return nil end
+		if not realm then realm = GetNormalizedRealmName() end
 		local guid = readable(UnitGUID, unit)
 		return name .. "-" .. realm, (type(guid) == "string") and guid or nil
 	end
@@ -2087,30 +2129,41 @@ end
 	if (dgks.db.profile.dopreparesound) then
 		if msg == format(DUEL_COUNTDOWN,3) then dgks:dgks_SoundPack(dgks.db.profile.kssoundP) end
 	end
-	-- Player fled from Duel
-	if strmatch(msg, format(DUEL_WINNER_RETREAT, "(.-%--.-)", playerName)) then
-		if dgks.db.profile.duelhumiliation then dgks:dgks_SoundPack(dgks.db.profile.kssoundH) end
-		opponent = strmatch(msg, format(DUEL_WINNER_RETREAT, "(.-%--.-)", playerName))
-		dgks:PlayerLoss(opponent)
-	--fixme should probably create new msgs for duels in the future
-	-- Opponent fled from Duel
-	elseif strmatch(msg, format(DUEL_WINNER_RETREAT, playerName, "(.-%--.-)")) then
-		opponent = strmatch(msg, format(DUEL_WINNER_RETREAT, playerName, "(.-%--.-)"))
-		dgks:DuelTX(opponent,GetTime())
-	-- Won Duel
-	elseif strmatch(msg, format(DUEL_WINNER_KNOCKOUT, playerName, "(.-%--.-)")) then
-		opponent = strmatch(msg, format(DUEL_WINNER_KNOCKOUT, playerName, "(.-%--.-)"))
-		dgks:DuelTX(opponent,GetTime())
-	-- Lost Duel
-	elseif strmatch(msg, format(DUEL_WINNER_KNOCKOUT, "(.-%--.-)", playerName)) then
-		opponent = strmatch(msg, format(DUEL_WINNER_KNOCKOUT, "(.-%--.-)", playerName))
-		dgks:PlayerLoss(opponent,GetTime())
-	else
-		--@debug@
-		-- Dev Debugging functions - This will print all system messages to the chat window, which is useful for debugging
-		--dgks:Print("DEBUG: " .. msg)
-		--@end-debug@
+	-- Duel results name both players. On Forever the message may use our full name ("First
+	-- Surname") or only our first name, so try the full name first.
+	local names = { playerName }
+	if playerFirstName and playerFirstName ~= playerName then names[2] = playerFirstName end
+	for _, me in ipairs(names) do
+		-- Literal name inside a pattern
+		me = me:gsub("[%^%$%(%)%%%.%[%]%*%+%-%?]", "%%%0")
+		-- Player fled from Duel
+		if strmatch(msg, format(DUEL_WINNER_RETREAT, "(.-%--.-)", me)) then
+			if dgks.db.profile.duelhumiliation then dgks:dgks_SoundPack(dgks.db.profile.kssoundH) end
+			opponent = strmatch(msg, format(DUEL_WINNER_RETREAT, "(.-%--.-)", me))
+			dgks:PlayerLoss(opponent)
+			return
+		--fixme should probably create new msgs for duels in the future
+		-- Opponent fled from Duel
+		elseif strmatch(msg, format(DUEL_WINNER_RETREAT, me, "(.-%--.-)")) then
+			opponent = strmatch(msg, format(DUEL_WINNER_RETREAT, me, "(.-%--.-)"))
+			dgks:DuelTX(opponent,GetTime())
+			return
+		-- Won Duel
+		elseif strmatch(msg, format(DUEL_WINNER_KNOCKOUT, me, "(.-%--.-)")) then
+			opponent = strmatch(msg, format(DUEL_WINNER_KNOCKOUT, me, "(.-%--.-)"))
+			dgks:DuelTX(opponent,GetTime())
+			return
+		-- Lost Duel
+		elseif strmatch(msg, format(DUEL_WINNER_KNOCKOUT, "(.-%--.-)", me)) then
+			opponent = strmatch(msg, format(DUEL_WINNER_KNOCKOUT, "(.-%--.-)", me))
+			dgks:PlayerLoss(opponent,GetTime())
+			return
+		end
 	end
+	--@debug@
+	-- Dev Debugging functions - This will print all system messages to the chat window, which is useful for debugging
+	--dgks:Print("DEBUG: " .. msg)
+	--@end-debug@
 end
 
 function dgks:OnEnable()
@@ -2129,7 +2182,11 @@ function dgks:OnEnable()
 	
 	--Setup variables
 	playerGUID = UnitGUID("player")
-	playerClass, _, playerRace, playerSex, _, playerName, _ = GetPlayerInfoByGUID(playerGUID)
+	local playerSecond
+	playerClass, _, playerRace, playerSex, _, playerName, playerSecond = GetPlayerInfoByGUID(playerGUID)
+	-- On Forever: "First Surname"; keep the first name too, for messages that use it
+	playerFirstName = playerName
+	playerName = dgks.PlayerFullName() or dgks.SplitName(playerName, playerSecond) or playerName
 
 	self.History:Enable()
 	self.Players:Enable()

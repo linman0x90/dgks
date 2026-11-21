@@ -617,7 +617,9 @@ local function addTooltipLines(tooltip, unit)
 	if isPlayer ~= true or UnitIsUnit(unit, "player") == true then return end
 	local name, realm = UnitFullName(unit)
 	if not usableString(name) then return end
-	if usableString(realm) then name = name .. "-" .. realm end
+	name, realm = dgks.SplitName(name, usableString(realm) and realm or nil) -- Forever: "First Surname"
+	if not name then return end
+	if realm then name = name .. "-" .. realm end
 
 	local mine, guild = H:CountsFor(H.PlayerKey(name))
 	local guildAny = guild and (guild.K > 0 or guild.D > 0)
