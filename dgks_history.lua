@@ -44,7 +44,9 @@ H.KIND_NAMES = { K = "Kill", D = "Death", W = "Duel win", L = "Duel loss", X = "
 
 local queue = {}          -- outgoing messages waiting for a moment when sending is allowed
 local pending = {}        -- [stream] = { peer = name, at = time } requests we are waiting on
-local roster = {}         -- [Name-Realm] = true, guild members
+local roster = {}         -- [Name-Realm] = { online = bool, target = name as the roster spells it }
+local rosterAt = 0        -- when we last asked the server for the roster
+local whispered = {}      -- [lowercased name] = time of our last sync whisper to it
 local nextSummaryAt = 0
 local myName, myRealm, guildKey
 
@@ -118,14 +120,50 @@ local function send(dist, target, prio, ...)
 	queue[#queue + 1] = { msg = dgks:Serialize(...), dist = dist, target = target, prio = prio }
 end
 
+-- Ask the server for a fresh guild roster (online flags), at most every 30 seconds
+local function requestRoster()
+	if now() - rosterAt < 30 or not IsInGuild() then return end
+	rosterAt = now()
+	if C_GuildInfo and C_GuildInfo.GuildRoster then
+		pcall(C_GuildInfo.GuildRoster)
+	elseif GuildRoster then
+		pcall(GuildRoster)
+	end
+end
+
+-- Whispers go only to guild members the roster shows online, spelled as the roster spells them.
+-- A whisper to anyone else makes the game print "No player named ... is currently playing", and
+-- queued sync whispers can wait minutes (dungeons, raids) while the member logs off.
+local function whisperTarget(name)
+	local m = roster[name]
+	if not m or not m.online then return nil end
+	return m.target
+end
+
 local function flushQueue()
 	if #queue == 0 or not canSend() then return end
 	local q = queue
 	queue = {}
 	for _, m in ipairs(q) do
-		local ok = pcall(dgks.SendCommMessage, dgks, PREFIX, m.msg, m.dist, m.target, m.prio)
-		if not ok then break end -- the rest is lost; the next summary round repairs it
+		local target = m.target
+		if m.dist == "WHISPER" then target = whisperTarget(m.target) end
+		if m.dist ~= "WHISPER" or target then
+			if target then whispered[target:lower()] = now() end
+			local ok = pcall(dgks.SendCommMessage, dgks, PREFIX, m.msg, m.dist, target, m.prio)
+			if not ok then break end -- the rest is lost; the next summary round repairs it
+		end
 	end
+end
+
+-- A member who logs off while our answer is on its way still triggers "No player named ..." for
+-- the pieces already sent. Hide that line for names we whispered sync data to in the last minute.
+local function hidePlayerNotFound(_, _, msg, ...)
+	if type(msg) ~= "string" or isSecret(msg) or type(ERR_CHAT_PLAYER_NOT_FOUND_S) ~= "string" then return false end
+	local pattern = "^" .. ERR_CHAT_PLAYER_NOT_FOUND_S:gsub("[%^%$%(%)%%%.%[%]%*%+%-%?]", "%%%0"):gsub("%%%%s", "(.+)") .. "$"
+	local name = msg:match(pattern)
+	if not name then return false end
+	local t = whispered[name:lower()]
+	return t ~= nil and now() - t < 60
 end
 
 -- Records ---------------------------------------------------------------------------------------
@@ -310,12 +348,9 @@ local function opponentInfo(rec, guid)
 	if not ok then return end
 	if usable(classFile, "string") and classFile ~= "" then rec.oc = classFile end
 	if usable(raceFile, "string") and raceFile ~= "" then rec.orc = raceFile end
-	if usable(name, "string") and name ~= "" and not rec.o:find("-", 1, true) then
-		if usable(realm, "string") and realm ~= "" then
-			rec.o = name .. "-" .. realm
-		else
-			rec.o = name .. "-" .. myRealm
-		end
+	name, realm = dgks.SplitName(name, realm) -- Forever: "First Surname", no realm
+	if name and not rec.o:find("-", 1, true) then
+		rec.o = name .. "-" .. (realm or myRealm)
 	end
 	local tguid = UnitGUID("target")
 	if usable(tguid, "string") and tguid == guid then
@@ -354,9 +389,10 @@ function H:RecordTeamKill(killerGUID, victimGUID)
 	if not victimGUID:match("^Player%-") then return end
 	local function info(guid)
 		local ok, _, classFile, _, _, _, name, realm = pcall(GetPlayerInfoByGUID, guid)
-		if not ok or not usable(name, "string") or name == "" then return nil end
-		if not usable(realm, "string") or realm == "" then realm = myRealm end
-		return name .. "-" .. realm, usable(classFile, "string") and classFile or nil
+		if not ok then return nil end
+		name, realm = dgks.SplitName(name, realm) -- Forever: "First Surname", no realm
+		if not name then return nil end
+		return name .. "-" .. (realm or myRealm), usable(classFile, "string") and classFile or nil
 	end
 	local killerName, killerClass = info(killerGUID)
 	local victimName = info(victimGUID)
@@ -460,7 +496,7 @@ function H:SendSummary()
 end
 
 local function isMember(name)
-	return name ~= nil and roster[name] == true
+	return name ~= nil and roster[name] ~= nil
 end
 
 local function onSummary(sender, proto, digest, heads)
@@ -580,6 +616,8 @@ function dgks:OnHistoryComm(prefix, message, distribution, sender)
 	if not ok or gk ~= guildKey then return end
 
 	if distribution == "GUILD" then
+		-- They just spoke in guild chat, so they are online whatever the roster last said
+		if roster[sender] then roster[sender].online = true end
 		if op == "R" then onLiveRecord(sender, a)
 		elseif op == "S" then onSummary(sender, a, b, c) end
 	elseif distribution == "WHISPER" and isMember(sender) then
@@ -592,7 +630,7 @@ end
 -- Guild and identity ----------------------------------------------------------------------------
 
 function H:UpdateIdentity()
-	local name = UnitName("player")
+	local name = dgks.PlayerFullName() -- Forever: "First Surname"
 	if usable(name, "string") and name ~= "" and name ~= UNKNOWNOBJECT then
 		myRealm = realmName()
 		myName = name .. "-" .. myRealm
@@ -621,8 +659,10 @@ function H:UpdateRoster()
 	if not IsInGuild() then return end
 	local n = GetNumGuildMembers() or 0
 	for i = 1, n do
-		local name = GetGuildRosterInfo(i)
-		if usable(name, "string") then roster[H.FullName(name)] = true end
+		local name, _, _, _, _, _, _, _, online = GetGuildRosterInfo(i)
+		if usable(name, "string") then
+			roster[H.FullName(name)] = { online = online == true, target = name }
+		end
 	end
 end
 
@@ -777,15 +817,17 @@ function H:Enable()
 		end
 		H:UpdateGuild()
 	end)
-	if C_GuildInfo and C_GuildInfo.GuildRoster then
-		C_GuildInfo.GuildRoster()
-	elseif GuildRoster then
-		GuildRoster()
-	end
+	requestRoster()
+	local filter = (ChatFrameUtil and ChatFrameUtil.AddMessageEventFilter) or ChatFrame_AddMessageEventFilter
+	if filter then pcall(filter, "CHAT_MSG_SYSTEM", hidePlayerNotFound) end
 
 	local lastPrune = now()
 	C_Timer.NewTicker(2, function()
 		if not guildKey then H:UpdateGuild() end
+		-- Keep the online flags fresh while whispers wait
+		for _, m in ipairs(queue) do
+			if m.dist == "WHISPER" then requestRoster() break end
+		end
 		if guildKey and now() >= nextSummaryAt then H:SendSummary() end
 		flushQueue()
 		if now() - lastPrune > 3600 then

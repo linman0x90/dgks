@@ -1,5 +1,7 @@
 -- dG KillShot death recap window: opens when you die and lists the damage you took in the last
--- WINDOW seconds, oldest first, ending with the killing blow.
+-- WINDOW seconds, oldest first, ending with the killing blow (highlighted). Damage is coloured by
+-- school and health bars by how much health was left. The Compact view shows only the killing blow
+-- and the attackers who did the most damage.
 --
 -- Sources:
 --   Classic: the combat log. Every hit on the player is kept for WINDOW seconds.
@@ -25,7 +27,7 @@ end
 
 -- Collecting hits (Classic) ----------------------------------------------------------------------
 
-local taken = {} -- { t = GetTime(), source, spell, spellId, env, amount, overkill, absorbed, resisted, blocked, crit, hp, hpMax }
+local taken = {} -- { t = GetTime(), source, spell, spellId, env, school, amount, overkill, absorbed, resisted, blocked, crit, hp, hpMax }
 
 local DAMAGE_EVENTS = {
 	SWING_DAMAGE = "swing", RANGE_DAMAGE = "spell", SPELL_DAMAGE = "spell", SPELL_PERIODIC_DAMAGE = "spell",
@@ -44,14 +46,16 @@ function dgks:TrackDamageTaken(...)
 	local hit = { t = GetTime(), source = sourceName }
 	if kind == "swing" then
 		-- amount, overkill, school, resisted, blocked, absorbed, critical
-		hit.amount, hit.overkill, _, hit.resisted, hit.blocked, hit.absorbed, hit.crit = select(12, ...)
+		hit.amount, hit.overkill, hit.school, hit.resisted, hit.blocked, hit.absorbed, hit.crit = select(12, ...)
 		hit.swing = true
 	elseif kind == "spell" then
 		-- spellId, spellName, spellSchool, amount, overkill, school, resisted, blocked, absorbed, critical
-		hit.spellId, hit.spell, _, hit.amount, hit.overkill, _, hit.resisted, hit.blocked, hit.absorbed, hit.crit = select(12, ...)
+		local spellSchool, school
+		hit.spellId, hit.spell, spellSchool, hit.amount, hit.overkill, school, hit.resisted, hit.blocked, hit.absorbed, hit.crit = select(12, ...)
+		hit.school = school or spellSchool
 	else
 		-- environmentalType, amount, overkill, school, resisted, blocked, absorbed, critical
-		hit.env, hit.amount, hit.overkill, _, hit.resisted, hit.blocked, hit.absorbed, hit.crit = select(12, ...)
+		hit.env, hit.amount, hit.overkill, hit.school, hit.resisted, hit.blocked, hit.absorbed, hit.crit = select(12, ...)
 		hit.source = nil
 	end
 	hit.hp, hit.hpMax = UnitHealth("player"), UnitHealthMax("player")
@@ -109,6 +113,7 @@ local function fromDeathRecap()
 				spell = ev.spellName,
 				spellId = ev.spellId,
 				env = ev.environmentalType,
+				school = ev.school,
 				swing = (not isSecret(ev.event) and ev.event == "SWING_DAMAGE") or nil,
 				amount = ev.amount,
 				overkill = ev.overkill,
@@ -171,9 +176,194 @@ local function setText(fs, value, format)
 	end
 end
 
+-- Damage schools: bit, name, colour for the amount. Hits of several schools take the colour of the
+-- first magic school in them (Shadowflame: Fire).
+local SCHOOLS = {
+	{ 2, "Holy", { 1, 0.9, 0.5 } },
+	{ 4, "Fire", { 1, 0.5, 0 } },
+	{ 8, "Nature", { 0.3, 1, 0.3 } },
+	{ 16, "Frost", { 0.5, 1, 1 } },
+	{ 32, "Shadow", { 0.63, 0.5, 1 } },
+	{ 64, "Arcane", { 1, 0.5, 1 } },
+	{ 1, "Physical", { 1, 0.35, 0.35 } },
+}
+local DEFAULT_DAMAGE_COLOR = { 1, 0.35, 0.35 }
+
+local function hasBit(value, b)
+	return math.floor(value / b) % 2 == 1
+end
+
+-- Colour and name of a damage school, or nil when it is unknown or secret
+local function schoolInfo(school)
+	if not num(school) or school <= 0 then return nil end
+	local color, names = nil, {}
+	for _, s in ipairs(SCHOOLS) do
+		if hasBit(school, s[1]) then
+			color = color or s[3]
+			names[#names + 1] = s[2]
+		end
+	end
+	if not color then return nil end
+	return color, table.concat(names, "/")
+end
+
 -- Window -----------------------------------------------------------------------------------------
 
-local frame, rowsFrames, lastRecap
+local HEADER_Y = -62     -- column headings, from the top of the window
+local FIRST_ROW_Y = -76
+local SKULL = "Interface\\TargetingFrame\\UI-TargetingFrame-Skull"
+local FLAT = "Interface\\Buttons\\WHITE8X8"
+local KILL_RED = { 0.85, 0.12, 0.12 }
+local TOP_SOURCES = 3
+
+local frame, rowFrames, sourceFrames, lastRecap
+
+local function healthColor(fraction)
+	if fraction > 0.5 then return 0.2, 0.75, 0.25 end
+	if fraction > 0.25 then return 0.9, 0.7, 0.1 end
+	return 0.85, 0.2, 0.15
+end
+
+local function alphaAnimation(f, from, to, duration)
+	local group = f:CreateAnimationGroup()
+	local a = group:CreateAnimation("Alpha")
+	a:SetFromAlpha(from)
+	a:SetToAlpha(to)
+	a:SetDuration(duration)
+	if group.SetToFinalAlpha then group:SetToFinalAlpha(true) end
+	return group
+end
+
+-- Close with a short fade
+local function fadeOut()
+	if not frame or not frame:IsShown() then return end
+	frame.fadeIn:Stop()
+	frame.fadeOut:Play()
+end
+
+local function rowTooltip(self)
+	if not self.data then return end
+	local d = self.data
+	GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+	pcall(function()
+		local text = ability(d)
+		GameTooltip:AddLine(text or "Unknown ability")
+		if self.killingBlow then GameTooltip:AddLine("Killing blow", KILL_RED[1], KILL_RED[2], KILL_RED[3]) end
+		local function line(label, v, fmt)
+			if v == nil then return end
+			if isSecret(v) then
+				GameTooltip:AddDoubleLine(label, v, 1, 1, 1, 1, 1, 1)
+			elseif not num(v) or v > 0 then
+				GameTooltip:AddDoubleLine(label, fmt and fmt(v) or tostring(v), 1, 1, 1, 1, 1, 1)
+			end
+		end
+		line("Attacker", d.source)
+		local color, schoolName = schoolInfo(d.school)
+		if schoolName then GameTooltip:AddDoubleLine("School", schoolName, 1, 1, 1, color[1], color[2], color[3]) end
+		line("Damage", d.amount, short)
+		line("Overkill", d.overkill, short)
+		line("Absorbed", d.absorbed, short)
+		line("Resisted", d.resisted, short)
+		line("Blocked", d.blocked, short)
+		if d.crit == true then GameTooltip:AddLine("Critical hit", 1, 0.82, 0) end
+		if d.ago == nil then GameTooltip:AddLine("Time not available here", 0.6, 0.6, 0.6) end
+	end)
+	GameTooltip:Show()
+end
+
+-- One hit: time, ability, attacker, damage, health afterwards
+local function createRow()
+	local row = CreateFrame("Frame", nil, frame)
+	row:SetSize(WIDTH - 20, ROW_HEIGHT)
+	row.stripe = row:CreateTexture(nil, "BACKGROUND")
+	row.stripe:SetAllPoints()
+	row.stripe:SetColorTexture(1, 1, 1, 0.035)
+	-- Killing blow: red wash, red edge and a skull
+	row.kbWash = row:CreateTexture(nil, "BACKGROUND")
+	row.kbWash:SetAllPoints()
+	row.kbWash:SetColorTexture(KILL_RED[1], KILL_RED[2], KILL_RED[3], 0.22)
+	row.kbEdge = row:CreateTexture(nil, "BORDER")
+	row.kbEdge:SetPoint("TOPLEFT")
+	row.kbEdge:SetPoint("BOTTOMLEFT")
+	row.kbEdge:SetWidth(2)
+	row.kbEdge:SetColorTexture(KILL_RED[1], KILL_RED[2], KILL_RED[3], 1)
+	row.skull = row:CreateTexture(nil, "ARTWORK")
+	row.skull:SetTexture(SKULL)
+	row.skull:SetSize(14, 14)
+	row.skull:SetPoint("LEFT", 5, 0)
+	local hl = row:CreateTexture(nil, "HIGHLIGHT")
+	hl:SetAllPoints()
+	hl:SetColorTexture(1, 1, 1, 0.06)
+
+	row.time = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	row.time:SetPoint("LEFT", 2, 0)
+	row.time:SetWidth(44)
+	row.time:SetJustifyH("RIGHT")
+	row.icon = row:CreateTexture(nil, "ARTWORK")
+	row.icon:SetSize(18, 18)
+	row.icon:SetPoint("LEFT", 52, 0)
+	row.icon:SetTexCoord(0.07, 0.93, 0.07, 0.93)
+	row.ability = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	row.ability:SetPoint("LEFT", 74, 0)
+	row.ability:SetWidth(158)
+	row.ability:SetJustifyH("LEFT")
+	row.ability:SetWordWrap(false)
+	row.source = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	row.source:SetPoint("LEFT", 236, 0)
+	row.source:SetWidth(118)
+	row.source:SetJustifyH("LEFT")
+	row.source:SetWordWrap(false)
+	row.amount = row:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+	row.amount:SetPoint("LEFT", 360, 0)
+	row.amount:SetWidth(64)
+	row.amount:SetJustifyH("RIGHT")
+	-- Health after the hit: a flat bar coloured by how much is left
+	row.hp = CreateFrame("StatusBar", nil, row)
+	row.hp:SetPoint("LEFT", 434, 0)
+	row.hp:SetSize(64, 12)
+	row.hp:SetStatusBarTexture(FLAT)
+	local hpBg = row.hp:CreateTexture(nil, "BACKGROUND")
+	hpBg:SetAllPoints()
+	hpBg:SetColorTexture(1, 1, 1, 0.08)
+	row.hpText = row.hp:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	row.hpText:SetPoint("CENTER", 0, 0)
+	row:EnableMouse(true)
+	row:SetScript("OnEnter", rowTooltip)
+	row:SetScript("OnLeave", function() GameTooltip:Hide() end)
+	return row
+end
+
+-- One attacker in the Compact view: icon of their biggest hit, name, hits, share bar, total
+local function createSourceRow()
+	local row = CreateFrame("Frame", nil, frame)
+	row:SetSize(WIDTH - 20, 24)
+	row.icon = row:CreateTexture(nil, "ARTWORK")
+	row.icon:SetSize(20, 20)
+	row.icon:SetPoint("LEFT", 4, 0)
+	row.icon:SetTexCoord(0.07, 0.93, 0.07, 0.93)
+	row.name = row:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+	row.name:SetPoint("LEFT", 30, 0)
+	row.name:SetWidth(170)
+	row.name:SetJustifyH("LEFT")
+	row.name:SetWordWrap(false)
+	row.hits = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	row.hits:SetPoint("LEFT", 204, 0)
+	row.hits:SetWidth(54)
+	row.hits:SetJustifyH("LEFT")
+	row.hits:SetTextColor(0.62, 0.62, 0.62)
+	row.track = row:CreateTexture(nil, "BACKGROUND")
+	row.track:SetPoint("LEFT", 262, 0)
+	row.track:SetSize(160, 8)
+	row.track:SetColorTexture(1, 1, 1, 0.08)
+	row.bar = row:CreateTexture(nil, "ARTWORK")
+	row.bar:SetPoint("LEFT", row.track, "LEFT")
+	row.bar:SetHeight(8)
+	row.total = row:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+	row.total:SetPoint("RIGHT", -6, 0)
+	row.total:SetWidth(70)
+	row.total:SetJustifyH("RIGHT")
+	return row
+end
 
 local function createWindow()
 	frame = CreateFrame("Frame", "dgksDeathRecapFrame", UIParent, "BackdropTemplate")
@@ -189,18 +379,24 @@ local function createWindow()
 		local point, _, relPoint, x, y = self:GetPoint()
 		dgks.db.profile.deathRecapPos = { point, relPoint, x, y }
 	end)
-	frame:SetBackdrop({
-		bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
-		edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-		tile = true, tileSize = 16, edgeSize = 16,
-		insets = { left = 4, right = 4, top = 4, bottom = 4 },
-	})
-	frame:SetBackdropColor(0.05, 0.05, 0.05, 0.92)
-	frame:SetBackdropBorderColor(0.6, 0.1, 0.1, 1)
+	-- Flat dark panel with a thin border and a red strip along the top
+	frame:SetBackdrop({ bgFile = FLAT, edgeFile = FLAT, edgeSize = 1 })
+	frame:SetBackdropColor(0.05, 0.05, 0.06, 0.94)
+	frame:SetBackdropBorderColor(0, 0, 0, 1)
+	local strip = frame:CreateTexture(nil, "ARTWORK")
+	strip:SetPoint("TOPLEFT", 1, -1)
+	strip:SetPoint("TOPRIGHT", -1, -1)
+	strip:SetHeight(3)
+	strip:SetColorTexture(KILL_RED[1], KILL_RED[2], KILL_RED[3], 1)
+
+	local skull = frame:CreateTexture(nil, "ARTWORK")
+	skull:SetTexture(SKULL)
+	skull:SetSize(30, 30)
+	skull:SetPoint("TOPLEFT", 12, -12)
 
 	frame.title = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-	frame.title:SetPoint("TOPLEFT", 12, -10)
-	frame.title:SetPoint("RIGHT", -34, 0)
+	frame.title:SetPoint("TOPLEFT", skull, "TOPRIGHT", 8, 0)
+	frame.title:SetPoint("RIGHT", -110, 0)
 	frame.title:SetJustifyH("LEFT")
 	frame.title:SetWordWrap(false)
 
@@ -208,101 +404,69 @@ local function createWindow()
 	frame.subtitle:SetPoint("TOPLEFT", frame.title, "BOTTOMLEFT", 0, -4)
 	frame.subtitle:SetPoint("RIGHT", -12, 0)
 	frame.subtitle:SetJustifyH("LEFT")
+	frame.subtitle:SetTextColor(0.75, 0.75, 0.75)
 
 	local close = CreateFrame("Button", nil, frame, "UIPanelCloseButton")
-	close:SetPoint("TOPRIGHT", -2, -2)
+	close:SetPoint("TOPRIGHT", 0, 0)
+	close:SetScript("OnClick", fadeOut)
 
-	-- Column headers
+	-- Compact / full list switch
+	local mode = CreateFrame("Button", nil, frame)
+	mode:SetSize(74, 20)
+	mode:SetPoint("TOPRIGHT", -32, -8)
+	local modeBg = mode:CreateTexture(nil, "BACKGROUND")
+	modeBg:SetAllPoints()
+	modeBg:SetColorTexture(1, 1, 1, 0.06)
+	local modeHl = mode:CreateTexture(nil, "HIGHLIGHT")
+	modeHl:SetAllPoints()
+	modeHl:SetColorTexture(1, 1, 1, 0.1)
+	mode.label = mode:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+	mode.label:SetPoint("CENTER")
+	mode:SetScript("OnClick", function()
+		dgks.db.profile.deathRecapCompact = not dgks.db.profile.deathRecapCompact
+		if lastRecap then dgks:RenderDeathRecap(lastRecap) end
+	end)
+	mode:SetScript("OnEnter", function(self)
+		GameTooltip:SetOwner(self, "ANCHOR_TOP")
+		GameTooltip:AddLine(dgks.db.profile.deathRecapCompact and "Show every hit" or "Show the killing blow and who did the most damage")
+		GameTooltip:Show()
+	end)
+	mode:SetScript("OnLeave", function() GameTooltip:Hide() end)
+	frame.mode = mode
+
+	-- Column headings
 	local headers = {
 		{ "Time", 12, 44, "RIGHT" }, { "Ability", 82, 160, "LEFT" }, { "Attacker", 246, 120, "LEFT" },
-		{ "Damage", 370, 64, "RIGHT" }, { "Health", 442, 64, "RIGHT" },
+		{ "Damage", 370, 64, "RIGHT" }, { "Health", 444, 64, "CENTER" },
 	}
 	for _, h in ipairs(headers) do
 		local fs = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-		fs:SetPoint("TOPLEFT", h[2], -52)
+		fs:SetPoint("TOPLEFT", h[2], HEADER_Y)
 		fs:SetWidth(h[3])
 		fs:SetJustifyH(h[4])
 		fs:SetText(h[1])
 	end
+	local rule = frame:CreateTexture(nil, "ARTWORK")
+	rule:SetPoint("TOPLEFT", 10, HEADER_Y - 12)
+	rule:SetPoint("TOPRIGHT", -10, HEADER_Y - 12)
+	rule:SetHeight(1)
+	rule:SetColorTexture(1, 1, 1, 0.12)
+
+	frame.sourceTitle = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+	frame.sourceTitle:SetJustifyH("LEFT")
 
 	frame.footer = frame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
 	frame.footer:SetPoint("BOTTOMLEFT", 12, 10)
 	frame.footer:SetPoint("RIGHT", -12, 0)
 	frame.footer:SetJustifyH("LEFT")
 
-	rowsFrames = {}
-	for i = 1, MAX_ROWS do
-		local row = CreateFrame("Frame", nil, frame)
-		row:SetSize(WIDTH - 20, ROW_HEIGHT)
-		row:SetPoint("TOPLEFT", 10, -66 - (i - 1) * ROW_HEIGHT)
-		if i % 2 == 0 then
-			local bg = row:CreateTexture(nil, "BACKGROUND")
-			bg:SetAllPoints()
-			bg:SetColorTexture(1, 1, 1, 0.04)
-		end
-		row.time = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-		row.time:SetPoint("LEFT", 2, 0)
-		row.time:SetWidth(44)
-		row.time:SetJustifyH("RIGHT")
-		row.icon = row:CreateTexture(nil, "ARTWORK")
-		row.icon:SetSize(18, 18)
-		row.icon:SetPoint("LEFT", 52, 0)
-		row.icon:SetTexCoord(0.07, 0.93, 0.07, 0.93)
-		row.ability = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-		row.ability:SetPoint("LEFT", 74, 0)
-		row.ability:SetWidth(158)
-		row.ability:SetJustifyH("LEFT")
-		row.ability:SetWordWrap(false)
-		row.source = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-		row.source:SetPoint("LEFT", 236, 0)
-		row.source:SetWidth(118)
-		row.source:SetJustifyH("LEFT")
-		row.source:SetWordWrap(false)
-		row.amount = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-		row.amount:SetPoint("LEFT", 360, 0)
-		row.amount:SetWidth(64)
-		row.amount:SetJustifyH("RIGHT")
-		row.amount:SetTextColor(1, 0.3, 0.3)
-		row.hp = CreateFrame("StatusBar", nil, row)
-		row.hp:SetPoint("LEFT", 434, 0)
-		row.hp:SetSize(62, 12)
-		row.hp:SetStatusBarTexture("Interface\\TargetingFrame\\UI-StatusBar")
-		row.hp:SetStatusBarColor(0.1, 0.8, 0.1)
-		local hpBg = row.hp:CreateTexture(nil, "BACKGROUND")
-		hpBg:SetAllPoints()
-		hpBg:SetColorTexture(0.2, 0, 0, 0.8)
-		row.hpText = row.hp:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-		row.hpText:SetPoint("CENTER")
-		row:EnableMouse(true)
-		row:SetScript("OnEnter", function(self)
-			if not self.data then return end
-			local d = self.data
-			GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-			pcall(function()
-				local text = ability(d)
-				GameTooltip:AddLine(text or "Unknown ability")
-				local function line(label, v, fmt)
-					if v == nil then return end
-					if isSecret(v) then
-						GameTooltip:AddDoubleLine(label, v, 1, 1, 1, 1, 1, 1)
-					elseif not num(v) or v > 0 then
-						GameTooltip:AddDoubleLine(label, fmt and fmt(v) or tostring(v), 1, 1, 1, 1, 1, 1)
-					end
-				end
-				line("Attacker", d.source)
-				line("Damage", d.amount, short)
-				line("Overkill", d.overkill, short)
-				line("Absorbed", d.absorbed, short)
-				line("Resisted", d.resisted, short)
-				line("Blocked", d.blocked, short)
-				if d.crit == true then GameTooltip:AddLine("Critical hit", 1, 0.82, 0) end
-				if d.ago == nil then GameTooltip:AddLine("Time not available here", 0.6, 0.6, 0.6) end
-			end)
-			GameTooltip:Show()
-		end)
-		row:SetScript("OnLeave", function() GameTooltip:Hide() end)
-		rowsFrames[i] = row
-	end
+	rowFrames, sourceFrames = {}, {}
+	for i = 1, MAX_ROWS do rowFrames[i] = createRow() end
+	for i = 1, TOP_SOURCES do sourceFrames[i] = createSourceRow() end
+
+	frame.fadeIn = alphaAnimation(frame, 0, 1, 0.25)
+	frame.fadeOut = alphaAnimation(frame, 1, 0, 0.2)
+	frame.fadeOut:SetScript("OnFinished", function() frame:Hide() end)
 
 	-- Close with Escape
 	tinsert(UISpecialFrames, "dgksDeathRecapFrame")
@@ -319,8 +483,15 @@ local function place()
 	end
 end
 
-local function fillRow(row, d)
+local function fillRow(row, d, y, stripe, killingBlow)
+	row:ClearAllPoints()
+	row:SetPoint("TOPLEFT", frame, "TOPLEFT", 10, y)
 	row.data = d
+	row.killingBlow = killingBlow
+	row.stripe:SetShown(stripe and not killingBlow)
+	row.kbWash:SetShown(killingBlow)
+	row.kbEdge:SetShown(killingBlow)
+	row.skull:SetShown(killingBlow)
 	if num(d.ago) then
 		row.time:SetText(d.ago < 0.05 and "0.0s" or ("-%.1fs"):format(d.ago))
 	else
@@ -339,15 +510,20 @@ local function fillRow(row, d)
 		if d.crit == true then s = s .. "*" end
 		return s
 	end)
+	local color = schoolInfo(d.school) or DEFAULT_DAMAGE_COLOR
+	row.amount:SetTextColor(color[1], color[2], color[3])
 	-- Health after the hit
 	if num(d.hp) and num(d.hpMax) and d.hpMax > 0 then
+		local fraction = math.max(0, d.hp) / d.hpMax
 		row.hp:SetMinMaxValues(0, d.hpMax)
 		row.hp:SetValue(math.max(0, d.hp))
-		row.hpText:SetText(("%d%%"):format(math.max(0, math.floor(d.hp / d.hpMax * 100 + 0.5))))
+		row.hp:SetStatusBarColor(healthColor(fraction))
+		row.hpText:SetText(("%d%%"):format(math.floor(fraction * 100 + 0.5)))
 		row.hp:Show()
 	elseif d.hp ~= nil and isSecret(d.hp) then
 		pcall(row.hp.SetMinMaxValues, row.hp, 0, d.hpMax or 1)
 		pcall(row.hp.SetValue, row.hp, d.hp)
+		row.hp:SetStatusBarColor(0.2, 0.75, 0.25)
 		row.hpText:SetText("")
 		row.hp:Show()
 	else
@@ -356,15 +532,101 @@ local function fillRow(row, d)
 	row:Show()
 end
 
+-- The attackers who did the most damage, biggest first, and the total of all damage. Nil when an
+-- amount or a name is secret: secret values cannot be added up or used as keys.
+local function topSources(rows)
+	local byKey, list, total = {}, {}, 0
+	for _, d in ipairs(rows) do
+		if not num(d.amount) or isSecret(d.source) or isSecret(d.env) then return nil end
+		local key, name
+		if d.source ~= nil then
+			key, name = "p:" .. tostring(d.source), d.source
+		elseif d.env ~= nil then
+			key = "e:" .. tostring(d.env)
+			name = ENV_TEXT[tostring(d.env):upper()] or tostring(d.env)
+		else
+			key, name = "hidden", "|cff9d9d9dHidden|r"
+		end
+		local s = byKey[key]
+		if not s then
+			s = { name = name, total = 0, hits = 0, biggest = -1 }
+			byKey[key] = s
+			list[#list + 1] = s
+		end
+		s.total = s.total + d.amount
+		s.hits = s.hits + 1
+		if d.amount > s.biggest then s.biggest, s.hit = d.amount, d end
+		total = total + d.amount
+	end
+	table.sort(list, function(a, b) return a.total > b.total end)
+	return list, total
+end
+
+local function fillSource(row, s, y, total)
+	row:ClearAllPoints()
+	row:SetPoint("TOPLEFT", frame, "TOPLEFT", 10, y)
+	local _, icon = ability(s.hit)
+	row.icon:SetTexture(icon or "Interface\\Icons\\INV_Misc_QuestionMark")
+	row.name:SetText(s.name)
+	row.hits:SetText(s.hits == 1 and "1 hit" or (s.hits .. " hits"))
+	local color = schoolInfo(s.hit.school) or DEFAULT_DAMAGE_COLOR
+	row.bar:SetWidth(math.max(2, 160 * s.total / math.max(total, 1)))
+	row.bar:SetColorTexture(color[1], color[2], color[3], 0.85)
+	row.total:SetText(short(s.total))
+	row.total:SetTextColor(color[1], color[2], color[3])
+	row:Show()
+end
+
 local function render(recap)
 	if not frame then createWindow() end
 	local rows = recap.rows
-	local shown = math.min(#rows, MAX_ROWS)
-	local first = #rows - shown + 1 -- keep the newest hits, ending with the killing blow
-	for i = 1, MAX_ROWS do
-		local d = rows[first + i - 1]
-		if i <= shown and d then fillRow(rowsFrames[i], d) else rowsFrames[i]:Hide() end
+	local compact = dgks.db.profile.deathRecapCompact == true
+	frame.mode.label:SetText(compact and "Full list" or "Compact")
+	for _, r in ipairs(rowFrames) do r:Hide() end
+	for _, r in ipairs(sourceFrames) do r:Hide() end
+	frame.sourceTitle:Hide()
+
+	local y = FIRST_ROW_Y
+	local notes = {}
+	if compact then
+		-- The killing blow, then who did the most damage
+		if rows[#rows] then
+			fillRow(rowFrames[1], rows[#rows], y, false, true)
+			y = y - ROW_HEIGHT
+		end
+		if #rows > 0 then
+			y = y - 12
+			frame.sourceTitle:ClearAllPoints()
+			frame.sourceTitle:SetPoint("TOPLEFT", frame, "TOPLEFT", 14, y)
+			frame.sourceTitle:Show()
+			y = y - 20
+			local list, total = topSources(rows)
+			if list then
+				frame.sourceTitle:SetText("Most damage")
+				for i = 1, math.min(TOP_SOURCES, #list) do
+					fillSource(sourceFrames[i], list[i], y, total)
+					y = y - 24
+				end
+			else
+				-- Secret amounts cannot be added up: show the hits before the killing blow instead
+				frame.sourceTitle:SetText("Hits before the killing blow")
+				local from = math.max(1, #rows - TOP_SOURCES)
+				for i = from, #rows - 1 do
+					fillRow(rowFrames[i - from + 2], rows[i], y, (i - from) % 2 == 1, false)
+					y = y - ROW_HEIGHT
+				end
+			end
+		end
+	else
+		local shown = math.min(#rows, MAX_ROWS)
+		local first = #rows - shown + 1 -- keep the newest hits, ending with the killing blow
+		for i = 1, shown do
+			fillRow(rowFrames[i], rows[first + i - 1], y, i % 2 == 0, first + i - 1 == #rows)
+			y = y - ROW_HEIGHT
+		end
+		if #rows > MAX_ROWS then notes[#notes + 1] = ("%d earlier hits not shown."):format(#rows - MAX_ROWS) end
 	end
+	if #rows == 0 then y = y - ROW_HEIGHT end
 
 	-- Title: who killed us, with their class and spec when known
 	local title = "|cffff4040You died|r" .. (recap.killer and (" - " .. recap.killer) or "")
@@ -395,15 +657,25 @@ local function render(recap)
 	if where ~= "" then sub = where .. "  |  " .. sub end
 	frame.subtitle:SetText(sub)
 
-	local notes = {}
-	if #rows > MAX_ROWS then notes[#notes + 1] = ("%d earlier hits not shown."):format(#rows - MAX_ROWS) end
 	if recap.source == "blizzard" then notes[#notes + 1] = "From Blizzard's Death Recap, which keeps only the last few hits." end
 	notes[#notes + 1] = "* critical hit. Reopen with /dgks deathrecap."
 	frame.footer:SetText(table.concat(notes, " "))
 
-	frame:SetHeight(66 + math.max(shown, 1) * ROW_HEIGHT + 28)
+	frame:SetHeight(-y + 30)
 	place()
-	frame:Show()
+	if not frame:IsShown() then
+		frame.fadeOut:Stop()
+		frame:SetAlpha(1)
+		frame:Show()
+		frame.fadeIn:Play()
+	end
+end
+
+function dgks:RenderDeathRecap(recap)
+	local ok, err = pcall(render, recap)
+	--@debug@
+	if not ok then dgks:Print("DEBUG: death recap window failed: " .. tostring(err)) end
+	--@end-debug@
 end
 
 -- Called when the player dies. killer is the text recorded as the killer (or nil).
@@ -416,20 +688,15 @@ function dgks:ShowDeathRecap(killer, record)
 		source = "blizzard"
 	end
 	lastRecap = { rows = rows, killer = killer, source = source, record = record }
-	if dgks.db.profile.deathRecap then
-		local ok, err = pcall(render, lastRecap)
-		--@debug@
-		if not ok then dgks:Print("DEBUG: death recap window failed: " .. tostring(err)) end
-		--@end-debug@
-	end
+	if dgks.db.profile.deathRecap then dgks:RenderDeathRecap(lastRecap) end
 end
 
 -- /dgks deathrecap: reopen the last recap
 function dgks:ToggleDeathRecap()
 	if frame and frame:IsShown() then
-		frame:Hide()
+		fadeOut()
 	elseif lastRecap then
-		render(lastRecap)
+		dgks:RenderDeathRecap(lastRecap)
 	else
 		dgks:Print("No death recap yet this session.")
 	end
