@@ -20,6 +20,7 @@ local lastLocalKillKey -- "victimGUID@timestamp" of the last kill we processed l
 local newestconfigversion = 1
 local frame, events = CreateFrame("Frame"), {}; -- Event Frame
 local damageDealers = {}
+local damageByPlayer = {} -- [name] = whether damageDealers[name] was player-controlled (Classic)
 local targetList = {} -- Used for Execute
 local playerGUID, playerClass, _, playerRace, playerSex, playerName
 local playerFirstName -- Forever: playerName is "First Surname", this is just "First"
@@ -101,6 +102,49 @@ end
 -- This character's name: "First Surname" on Forever, the plain name elsewhere
 function dgks.PlayerFullName()
 	return dgks.SplitName(UnitName("player"))
+end
+
+-- PvP or PvE? History records kills and deaths involving other players. Kills of NPCs and deaths
+-- to NPCs or the environment are recorded only with the "Also log PvE kills and deaths" option.
+local function inPvPInstance()
+	local ok, _, instanceType = pcall(IsInInstance)
+	return ok and not isSecret(instanceType) and (instanceType == "pvp" or instanceType == "arena")
+end
+
+local function isPlayerGUID(guid)
+	return type(guid) == "string" and not isSecret(guid) and guid:find("^Player%-") ~= nil
+end
+
+-- Does history keep PvE kills and deaths?
+function dgks:LogsPvE()
+	return dgks.db.profile.historyPve == true
+end
+
+-- Was this death at the hands of another player? isPlayer: what the combat log said (Classic).
+-- On retail the Death Recap gives only a name: a likely killer is always an enemy player, a GUID
+-- says so outright, and a name we saw on a player nearby is one. Otherwise only a battleground or
+-- arena makes it PvP (that is also the only place an unknown killer counts).
+function dgks:KilledByPlayer(killer, flags, guid, isPlayer)
+	if isPlayer ~= nil then return isPlayer == true end
+	if flags and flags.guessed then return true end
+	if type(guid) == "string" and not isSecret(guid) then return isPlayerGUID(guid) end
+	if flags and flags.unknown then return inPvPInstance() end
+	if type(killer) == "string" and not isSecret(killer) and dgks.Players then
+		local ok, seen = pcall(dgks.Players.Lookup, dgks.Players, killer)
+		if ok and seen then return true end
+	end
+	return inPvPInstance()
+end
+
+-- Record a PvE kill in history without any announcement (the option is on, NPC killshots are off)
+local lastPvEKill, lastPvEKillAt -- one death can reach us twice (PARTY_KILL and a pet's UNIT_DIED)
+local function recordPvEKill(name, guid)
+	if not dgks:LogsPvE() or isSecret(name) or type(name) ~= "string" or name == "" then return end
+	if isSecret(guid) then guid = nil end
+	local key = guid or name
+	if key == lastPvEKill and GetTime() - lastPvEKillAt < 2 then return end
+	lastPvEKill, lastPvEKillAt = key, GetTime()
+	dgks.History:Record("K", name, guid)
 end
 
 -- Settings > History tab: history options, then the reset and clear buttons
@@ -1079,6 +1123,7 @@ local defaults = {
 		deathRecapCompact = false, -- Death recap shows only the killing blow and the top attackers
 		inspectSpecs = true, -- Inspect nearby enemy players to learn their spec (dgks_players.lua)
 		recordTeamKills = true, -- Record party and raid members' killing blows on players (team kills)
+		historyPve = false, -- Also record kills of NPCs and deaths to NPCs or the environment in history
 	},
 }
 
@@ -1202,6 +1247,9 @@ function dgks:CombatLogEventHandler(info, timestamp, event, hideCaster, sourceGU
 				-- A party or raid member landed the killing blow on another player: a team kill
 				dgks.History:RecordTeamKill(sourceGUID, destGUID)
 			end
+		elseif sourceGUID == UnitGUID("player") then
+			-- Our kill of an NPC, with NPC killshots off: history only, when PvE logging is on
+			recordPvEKill(destName, destGUID)
 		end
 	end
 	-- Check for player death by pet
@@ -1209,8 +1257,8 @@ function dgks:CombatLogEventHandler(info, timestamp, event, hideCaster, sourceGU
 	if event == "UNIT_DIED" then
 		if destName == playerName then
 			-- Player has died
-			local myKiller = damageDealers[destName]			
-			self:PlayerDeath(myKiller)
+			local myKiller = damageDealers[destName]
+			self:PlayerDeath(myKiller, nil, nil, damageByPlayer[destName] == true)
 			-- Test is probably broken
 		elseif bit.band(destFlags, COMBATLOG_OBJECT_TYPE_PLAYER) == COMBATLOG_OBJECT_TYPE_PLAYER or dgks.db.profile.dopve or destName == "Test-Victim" then
 				if damageDealers[destName] == "PlayerPet" then
@@ -1223,6 +1271,9 @@ function dgks:CombatLogEventHandler(info, timestamp, event, hideCaster, sourceGU
 				-- The player has landed a killshot,this detection method is fooled by Feign Death so we do PARTY_KILL ALSO
 				self:KillshotTX(destName, timestamp, destGUID)
 			end
+		elseif damageDealers[destName] == "PlayerPet" then
+			-- Our pet killed an NPC, with NPC killshots off: history only, when PvE logging is on
+			recordPvEKill(destName, destGUID)
 		end
 	end
 	
@@ -1232,6 +1283,8 @@ function dgks:CombatLogEventHandler(info, timestamp, event, hideCaster, sourceGU
 		-- This worked, but we need to superate pets -- if sourceName ~= playerName and bit.band(sourceFlags, COMBATLOG_OBJECT_AFFILIATION_MINE) > 0 then sourceName = playerName end
 		if sourceName ~= playerName and bit.band(sourceFlags, COMBATLOG_OBJECT_AFFILIATION_MINE) > 0 then sourceName = "PlayerPet" end
 		damageDealers[destName] = sourceName
+		-- Player-controlled: a player or a player's pet or totem (PvP); NPCs and the environment are not
+		damageByPlayer[destName] = bit.band(sourceFlags or 0, COMBATLOG_OBJECT_CONTROL_PLAYER or 0x100) ~= 0
 		
 		-- Check for execute if enabled
 		if dgks.db.profile.doexecutesound or dgks.db.profile.doexecutesoundpve then
@@ -1300,7 +1353,10 @@ function dgks:KillshotTX(txvictim,txtimestamp,txvictimGUID)
 	-- Handle it locally first: sounds and text must not depend on our own broadcast coming back
 	-- (it does not when we are in no guild or group, or when addon messages are locked down).
 	self:ProcessKillshot("dgks", playerName, txvictim, txtimestamp, streak, multikill, true, txvictimGUID)
-	self.History:Record("K", txvictim, txvictimGUID, streak, multikill)
+	-- NPC killshots (the "Trigger off NPC/PVE Killshots" option) go to history only with PvE logging on
+	if txvictimGUID == nil or isPlayerGUID(txvictimGUID) or self:LogsPvE() then
+		self.History:Record("K", txvictim, txvictimGUID, streak, multikill)
+	end
 
 	-- Then broadcast our Killshot to other dgks users. Our own echo is dropped in OnCommReceived.
 	self:SendCM("dgks",dgks:Serialize(playerName,txvictim,txtimestamp,streak,multikill))
@@ -1543,8 +1599,9 @@ function dgks:ProcessKillshot(cchan, rxkiller, rxvictim, rxtimestamp, rxstreak, 
 end
 
 -- flags: nil, { unknown = true } (myKiller is a reason, not a name) or { guessed = n } (a likely
--- killer out of n candidates). guid: the killer's GUID when known.
-function dgks:PlayerDeath(myKiller, flags, guid)
+-- killer out of n candidates). guid: the killer's GUID when known. killerIsPlayer: whether the
+-- combat log showed the killing blow coming from a player or their pet (Classic), else nil.
+function dgks:PlayerDeath(myKiller, flags, guid, killerIsPlayer)
 	streak = 0;
 	deathstreak = deathstreak + 1;
 	if (deathstreak > dgks.db.profile.maxdeathstreak) then dgks.db.profile.maxdeathstreak = deathstreak end
@@ -1566,7 +1623,11 @@ function dgks:PlayerDeath(myKiller, flags, guid)
 			dgks:Print("You been murdered by "..myKiller.." "..#dgks.db.profile.deathList[myKiller].." times.")
 		end
 	end
-	local rec = dgks.History:Record("D", myKiller, guid, nil, nil, flags)
+	-- History keeps deaths to players; deaths to NPCs and the environment only with PvE logging on
+	local rec
+	if self:LogsPvE() or self:KilledByPlayer(myKiller, flags, guid, killerIsPlayer) then
+		rec = dgks.History:Record("D", myKiller, guid, nil, nil, flags)
+	end
 	local recapKiller = myKiller
 	if flags and flags.unknown then
 		recapKiller = "killer unknown (" .. myKiller .. ")"
@@ -2027,6 +2088,12 @@ if classic then
 				dgks:Print("DEBUG: " .. "Sending "..vName.." and "..timestamp.." to KillshotTX." )
 				--@end-debug@
 				dgks:KillshotTX(vName, timestamp, targetGUID)
+			end
+		elseif attackerGUID == playerGUID then
+			-- Our kill of an NPC, with NPC killshots off: history only, when PvE logging is on
+			if dgks:LogsPvE() and UnitNameFromGUID then
+				local ok, name = pcall(UnitNameFromGUID, targetGUID)
+				if ok then recordPvEKill(name, targetGUID) end
 			end
 		elseif attackerGUID ~= playerGUID and dgks:TargetCheck(targetGUID)
 			and isGroupMember(attackerGUID) and not isGroupMember(targetGUID) then

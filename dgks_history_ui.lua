@@ -552,6 +552,15 @@ function H:SettingsArgs(base)
 			get = function() return dgks.db.profile.recordTeamKills end,
 			set = function(_, v) dgks.db.profile.recordTeamKills = v end,
 		},
+		historyPve = {
+			type = "toggle",
+			order = base + 44.77,
+			width = "full",
+			name = "Also log PvE kills and deaths",
+			desc = "History records kills of other players and deaths to other players. Turn this on to also record kills of NPCs and deaths to NPCs, falling and the like. PvE records are shared with your guild like any other.",
+			get = function() return dgks.db.profile.historyPve end,
+			set = function(_, v) dgks.db.profile.historyPve = v end,
+		},
 		historyInspect = {
 			type = "toggle",
 			order = base + 44.8,
