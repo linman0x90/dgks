@@ -45,6 +45,7 @@ H.KIND_NAMES = { K = "Kill", D = "Death", W = "Duel win", L = "Duel loss", X = "
 local queue = {}          -- outgoing messages waiting for a moment when sending is allowed
 local pending = {}        -- [stream] = { peer = name, at = time } requests we are waiting on
 local roster = {}         -- [Name-Realm] = true, guild members
+local memberCache = {}    -- [name] = canonical member name, see H.CanonicalMember
 local nextSummaryAt = 0
 local myName, myRealm, guildKey
 
@@ -254,7 +255,7 @@ function H:GuildRecords()
 			else
 				list[#list + 1] = rec
 				if rec.k == "K" then
-					local key = (H.PlayerKey(rec.a) or "?") .. "|" .. (H.OpponentKey(rec) or "?")
+					local key = (H.PlayerKey(H.CanonicalMember(rec.a)) or "?") .. "|" .. (H.OpponentKey(rec) or "?")
 					ownKills[key] = ownKills[key] or {}
 					table.insert(ownKills[key], rec.t)
 				end
@@ -271,7 +272,9 @@ function H:GuildRecords()
 	table.sort(teamKills, function(a, b) return a.t < b.t end)
 	local seen = {}
 	for _, rec in ipairs(teamKills) do
-		local key = (H.PlayerKey(rec.kn, rec.a and rec.a:match("%-(.+)$")) or "?") .. "|" .. (H.OpponentKey(rec) or "?")
+		-- The killer's own record may name them by first name only ("Pink") while the witness wrote the full
+		-- name ("Pink Tonic"): compare them as the same member, or the kill is listed twice
+		local key = (H.PlayerKey(H.CanonicalMember(rec.kn), rec.a and rec.a:match("%-(.+)$")) or "?") .. "|" .. (H.OpponentKey(rec) or "?")
 		if not near(ownKills[key], rec.t) and not near(seen[key], rec.t) then
 			seen[key] = seen[key] or {}
 			table.insert(seen[key], rec.t)
@@ -616,13 +619,61 @@ function H:UpdateGuild()
 	end
 end
 
+-- WoW Forever has no realms: GetNormalizedRealmName() is "" there. The member merge below is Forever-only.
+local function isRealmless()
+	return GetNormalizedRealmName ~= nil and GetNormalizedRealmName() == ""
+end
+
+-- The name a guild member is listed under. On WoW Forever characters have a first name and a surname, and
+-- versions before the surname fix wrote some names as the first name only ("Pink" for "Pink Tonic"),
+-- so one member could appear twice in the guild tables. A name without a surname that is the start of
+-- exactly one guild member's full name ("Pink " + "Tonic") is that member. Nothing stored is changed: this
+-- only decides which row a record is counted under. It leaves a name alone when it is already a full name,
+-- when it is a real one-word member, when two members could match, or when there is no roster yet, and it
+-- does nothing on versions whose names have no spaces. A dangling "-" (an empty realm) is dropped.
+function H.CanonicalMember(name)
+	if type(name) ~= "string" or name == "" then return name end
+	name = name:gsub("%-$", "")
+	local cached = memberCache[name]
+	if cached ~= nil then return cached end
+	local result = name
+	if isRealmless() and not name:find(" ", 1, true) and not name:find("-", 1, true) then
+		local prefix = name .. " "
+		local found, ambiguous, isMemberName = nil, false, false
+		for full in pairs(roster) do
+			local base = full:gsub("%-.*$", "")
+			if base == name then
+				isMemberName = true -- a real member with this exact name
+			elseif base:sub(1, #prefix) == prefix then
+				if found and found ~= base then ambiguous = true end
+				found = found or base
+			end
+		end
+		if found and not ambiguous and not isMemberName then result = found end
+	end
+	memberCache[name] = result
+	return result
+end
+
 function H:UpdateRoster()
+	local old = {}
+	for k in pairs(roster) do old[k] = true end
 	wipe(roster)
-	if not IsInGuild() then return end
-	local n = GetNumGuildMembers() or 0
-	for i = 1, n do
-		local name = GetGuildRosterInfo(i)
-		if usable(name, "string") then roster[H.FullName(name)] = true end
+	if IsInGuild() then
+		local n = GetNumGuildMembers() or 0
+		for i = 1, n do
+			local name = GetGuildRosterInfo(i)
+			if usable(name, "string") then roster[H.FullName(name)] = true end
+		end
+	end
+	-- The roster refreshes often; only redo the member names when the members themselves changed
+	local changed = false
+	for k in pairs(roster) do if not old[k] then changed = true break end end
+	if not changed then for k in pairs(old) do if not roster[k] then changed = true break end end end
+	if changed then
+		wipe(memberCache)
+		-- Only Forever has member names to redo; elsewhere the tables are left exactly as they were
+		if isRealmless() then H:NotifyChanged() end
 	end
 end
 
