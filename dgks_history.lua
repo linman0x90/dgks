@@ -79,6 +79,8 @@ end
 -- Short display name: drop our own realm
 function H.ShortName(name)
 	if type(name) ~= "string" then return "?" end
+	-- Forever has no realms, so a full name is "First Surname-": drop the dangling hyphen
+	if dgks.UsesSurnames() then name = name:gsub("%-$", "") end
 	local n, r = name:match("^(.-)%-(.+)$")
 	if n and r == myRealm then return n end
 	return name
@@ -707,6 +709,13 @@ end
 -- GetNormalizedRealmName (no spaces or hyphens). A name without a realm belongs to defaultRealm.
 function H.PlayerKey(name, defaultRealm)
 	if type(name) ~= "string" or name == "" then return nil end
+	-- Forever has no realms, so a stored name is "First Surname-" while a name read from a unit is
+	-- "First Surname". Drop the dangling hyphen so both give the same key; otherwise "First Surname-"
+	-- came out as "First Surname--" and a lookup by "First Surname" (the unit tooltip) never matched.
+	if dgks.UsesSurnames() then
+		name = name:gsub("%-$", "")
+		if name == "" then return nil end
+	end
 	local n, realm = name:match("^([^%-]+)%-(.+)$")
 	if not n then n, realm = name, defaultRealm or myRealm end
 	if not realm then return nil end

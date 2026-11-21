@@ -420,6 +420,8 @@ local function statusText()
 	local gk = H:GuildKey()
 	local mine = #H:PersonalRecords()
 	if gk then
+		-- Forever has no realms, so the guild key is "Guild-": drop the dangling hyphen
+		if dgks.UsesSurnames() then gk = gk:gsub("%-$", "") end
 		return ("%d personal records  |  Guild %s: %d records"):format(mine, gk, #H:GuildRecords())
 	end
 	return ("%d personal records  |  Not in a guild"):format(mine)
