@@ -35,6 +35,8 @@ local SUMMARY_FIRST_DELAY = 30        -- seconds after login before the first su
 local SUMMARY_INTERVAL = 15 * 60      -- seconds between summaries
 local REQUEST_TIMEOUT = 120           -- seconds before a request that got no answer may be retried
 local MAX_STREAMS_PER_REQUEST = 40
+local MAX_UNANSWERED = 3              -- requests to one member that may go unanswered before we stop asking them
+local PEER_BACKOFF = 30 * 60          -- seconds we then leave that member alone
 local MAX_RECORDS_PER_ANSWER = 300    -- per stream per request; the rest follows next round
 local RECORDS_PER_BATCH = 8
 -- Kill, Death, duel Win, duel Loss, and X: a killing blow by a party or raid member that we saw
@@ -43,7 +45,8 @@ local KINDS = { K = true, D = true, W = true, L = true, X = true }
 H.KIND_NAMES = { K = "Kill", D = "Death", W = "Duel win", L = "Duel loss", X = "Team kill" }
 
 local queue = {}          -- outgoing messages waiting for a moment when sending is allowed
-local pending = {}        -- [stream] = { peer = name, at = time } requests we are waiting on
+local pending = {}        -- [stream] = { peer = name, at = time, req = table } requests we are waiting on
+local peers = {}          -- [Name-Realm] = { missed = n, quietUntil = time }: how our requests to a member went
 local roster = {}         -- [Name-Realm] = true, guild members
 local nextSummaryAt = 0
 local myName, myRealm, guildKey
@@ -463,6 +466,39 @@ local function isMember(name)
 	return name ~= nil and roster[name] == true
 end
 
+-- A request to a member that nobody answers (the whisper never arrived, or they logged off) would
+-- otherwise be repeated with every summary they send. After MAX_UNANSWERED misses in a row we leave
+-- that member alone for PEER_BACKOFF seconds; any answer from them clears the count.
+-- This is only done on WoW Forever, where the realm is "" and a failed whisper is likely; on every
+-- other version requests behave exactly as before.
+local function isRealmless()
+	return GetNormalizedRealmName ~= nil and GetNormalizedRealmName() == ""
+end
+
+local function peerQuiet(peer, t)
+	if not isRealmless() then return false end
+	local p = peers[peer]
+	return p ~= nil and p.quietUntil ~= nil and t < p.quietUntil
+end
+
+local function requestMissed(peer, t)
+	if not isRealmless() then return end
+	local p = peers[peer]
+	if not p then
+		p = { missed = 0 }
+		peers[peer] = p
+	end
+	p.missed = p.missed + 1
+	if p.missed >= MAX_UNANSWERED then
+		p.missed = 0
+		p.quietUntil = t + PEER_BACKOFF
+	end
+end
+
+local function peerAnswered(peer)
+	peers[peer] = nil
+end
+
 local function onSummary(sender, proto, digest, heads)
 	if proto ~= PROTOCOL or type(heads) ~= "table" then return end
 	local _, myDigest = headsAndDigest()
@@ -473,15 +509,25 @@ local function onSummary(sender, proto, digest, heads)
 	end
 	local store = guildStore(true)
 	local wants, count, t = {}, 0, now()
+	local req = { peer = sender } -- one request: its streams count as one miss if it goes unanswered
 	for stream, head in pairs(heads) do
 		if count >= MAX_STREAMS_PER_REQUEST then break end
 		if type(stream) == "string" and #stream <= 80 and stream:find("#", 1, true)
 			and type(head) == "number" and head == math.floor(head) and head > 0 then
 			local mine = store.streams[stream] and store.streams[stream].h or 0
 			local p = pending[stream]
-			if head > mine and not (p and t - p.at < REQUEST_TIMEOUT) then
+			if p and t - p.at >= REQUEST_TIMEOUT then
+				-- That request timed out with no answer
+				if p.req and not p.req.missed then
+					p.req.missed = true
+					requestMissed(p.peer, t)
+				end
+				pending[stream] = nil
+				p = nil
+			end
+			if head > mine and not p and not peerQuiet(sender, t) then
 				wants[stream] = mine
-				pending[stream] = { peer = sender, at = t, target = head }
+				pending[stream] = { peer = sender, at = t, target = head, req = req }
 				count = count + 1
 			end
 		end
@@ -535,6 +581,7 @@ end
 local function onBatch(sender, stream, batch)
 	local p = type(stream) == "string" and pending[stream]
 	if not p or p.peer ~= sender or type(batch) ~= "table" then return end
+	peerAnswered(sender)
 	p.at = now() -- still answering
 	local store = guildStore(true)
 	local added = false
@@ -550,6 +597,7 @@ end
 local function onEnd(sender, stream, upTo)
 	local p = type(stream) == "string" and pending[stream]
 	if not p or p.peer ~= sender then return end
+	peerAnswered(sender)
 	pending[stream] = nil
 	if type(upTo) ~= "number" or upTo ~= math.floor(upTo) or upTo < 1 then return end
 	local st = getStream(guildStore(true), stream)
@@ -559,7 +607,7 @@ local function onEnd(sender, stream, upTo)
 	end
 	-- An answer is capped at MAX_RECORDS_PER_ANSWER; ask the same peer for the rest right away
 	if p.target and st.h < p.target and upTo > 0 then
-		pending[stream] = { peer = sender, at = now(), target = p.target }
+		pending[stream] = { peer = sender, at = now(), target = p.target, req = { peer = sender } }
 		send("WHISPER", sender, "BULK", "Q", guildKey, { [stream] = st.h })
 	end
 end
@@ -611,6 +659,7 @@ function H:UpdateGuild()
 	end
 	if guildKey ~= old then
 		wipe(pending)
+		wipe(peers)
 		nextSummaryAt = now() + SUMMARY_FIRST_DELAY
 		H:NotifyChanged()
 	end
