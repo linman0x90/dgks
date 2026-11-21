@@ -619,6 +619,11 @@ function H:UpdateGuild()
 	end
 end
 
+-- WoW Forever has no realms: GetNormalizedRealmName() is "" there. The member merge below is Forever-only.
+local function isRealmless()
+	return GetNormalizedRealmName ~= nil and GetNormalizedRealmName() == ""
+end
+
 -- The name a guild member is listed under. On WoW Forever characters have a first name and a surname, and
 -- versions before the surname fix wrote some names as the first name only ("Pink" for "Pink Tonic"),
 -- so one member could appear twice in the guild tables. A name without a surname that is the start of
@@ -632,7 +637,7 @@ function H.CanonicalMember(name)
 	local cached = memberCache[name]
 	if cached ~= nil then return cached end
 	local result = name
-	if not name:find(" ", 1, true) and not name:find("-", 1, true) then
+	if isRealmless() and not name:find(" ", 1, true) and not name:find("-", 1, true) then
 		local prefix = name .. " "
 		local found, ambiguous, isMemberName = nil, false, false
 		for full in pairs(roster) do
@@ -667,7 +672,8 @@ function H:UpdateRoster()
 	if not changed then for k in pairs(old) do if not roster[k] then changed = true break end end end
 	if changed then
 		wipe(memberCache)
-		H:NotifyChanged()
+		-- Only Forever has member names to redo; elsewhere the tables are left exactly as they were
+		if isRealmless() then H:NotifyChanged() end
 	end
 end
 
