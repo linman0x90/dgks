@@ -116,11 +116,16 @@ local function canSend()
 	return instanceType == "pvp" or instanceType == "arena"
 end
 
+-- WoW Forever has no realms: GetNormalizedRealmName() is "" there. The empty-realm fixes only run on Forever.
+local function isRealmless()
+	return GetNormalizedRealmName ~= nil and GetNormalizedRealmName() == ""
+end
+
 local function send(dist, target, prio, ...)
 	-- WoW Forever returns an empty realm, so a full name (the guild roster, a sender) ends up as "Name-".
 	-- The client cannot whisper that and prints "No player named 'Name-' is currently playing." for every
 	-- reply, and because the whisper never arrives the sync keeps retrying. Whisper the bare name.
-	if dist == "WHISPER" and usable(target, "string") then
+	if dist == "WHISPER" and isRealmless() and usable(target, "string") then
 		target = target:gsub("%-$", "")
 	end
 	queue[#queue + 1] = { msg = dgks:Serialize(...), dist = dist, target = target, prio = prio }

@@ -50,6 +50,12 @@ local function isSecret(v)
 	return issecretvalue ~= nil and issecretvalue(v) == true
 end
 
+-- WoW Forever has no realms: GetNormalizedRealmName() is "" there. The empty-realm fixes in this file only
+-- run on Forever, so every other version behaves exactly as before.
+local function isRealmless()
+	return GetNormalizedRealmName ~= nil and GetNormalizedRealmName() == ""
+end
+
 -- Is this GUID one of our party or raid members (not us)?
 local function isGroupMember(guid)
 	if type(guid) ~= "string" or isSecret(guid) then return false end
@@ -1392,7 +1398,7 @@ end
 -- arrive as "Name-" with a dangling hyphen; drop that before comparing.
 function dgks:IsOwnSender(sender)
 	if isSecret(sender) or type(sender) ~= "string" or playerName == nil then return false end
-	sender = sender:gsub("%-$", "")
+	if isRealmless() then sender = sender:gsub("%-$", "") end
 	if sender == playerName then return true end
 	if type(Ambiguate) == "function" then
 		local ok, short = pcall(Ambiguate, sender, "none")
@@ -1850,8 +1856,8 @@ function dgks:SendCM(cchan,msg)
 					-- cannot be whispered from this one.
 					-- WoW Forever returns an empty realmName instead of nil. Without a realm we cannot tell whether
 					-- this friend is on our realm, and a whisper to a bare name on another realm prints
-					-- "No player named ... is currently playing." So skip friends with no realm info.
-					if game and game.characterName ~= nil and game.realmName ~= nil and game.realmName ~= ""
+					-- "No player named ... is currently playing." So skip friends with no realm info (on Forever only).
+					if game and game.characterName ~= nil and game.realmName ~= nil and (game.realmName ~= "" or not isRealmless())
 						and game.factionName ~= nil
 						and (game.wowProjectID == nil or game.wowProjectID == WOW_PROJECT_ID) then
 						--@debug@
