@@ -598,6 +598,8 @@ local function statusText()
 	local guildCount = #H:GuildRecords()
 	local mine = #H:PersonalRecords()
 	if gk then
+		-- WoW Forever has no realm, so the guild key is "Guild-": drop the dangling hyphen
+		gk = gk:gsub("%-$", "")
 		return ("%d personal records  |  Guild %s: %d records"):format(mine, gk, guildCount)
 	end
 	return ("%d personal records  |  Not in a guild"):format(mine)
