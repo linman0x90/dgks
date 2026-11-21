@@ -129,6 +129,16 @@ local function giveGeneral()
 				order = 2,
 				width = "full"
 			},
+			deathRecapCompact = {
+				type = 'toggle',
+				name = 'Compact death recap',
+				desc = 'Show only the killing blow and the three attackers who did the most damage. Switch between this and the full list with the button in the recap window.',
+				get = function() return dgks.db.profile.deathRecapCompact end,
+				set = function(info, v) dgks.db.profile.deathRecapCompact = v end,
+				disabled = function() return not dgks.db.profile.deathRecap end,
+				order = 2.5,
+				width = "full"
+			},
 			minimapButton = {
 				type = 'toggle',
 				name = 'Show minimap button',
@@ -1030,6 +1040,7 @@ local defaults = {
 		minimap = { hide = false, angle = 200 }, -- Minimap button (dgks_minimap.lua)
 		guessKiller = true, -- When the Death Recap cannot name the killer, record the likely one
 		deathRecap = true, -- Open the death recap window when we die (dgks_deathrecap.lua)
+		deathRecapCompact = false, -- Death recap shows only the killing blow and the top attackers
 		inspectSpecs = true, -- Inspect nearby enemy players to learn their spec (dgks_players.lua)
 		recordTeamKills = true, -- Record party and raid members' killing blows on players (team kills)
 	},
