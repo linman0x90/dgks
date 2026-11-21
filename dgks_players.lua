@@ -113,7 +113,8 @@ function P:Note(unit)
 	local guid = str(readable(UnitGUID, unit))
 	if guid and guid == UnitGUID("player") then return end
 	local name, realm = readable(UnitFullName, unit)
-	name, realm = str(name), str(realm)
+	name, realm = dgks.SplitName(str(name), str(realm)) -- WoW Forever: the second value is the surname
+	realm = str(realm)
 	if not guid or not name then return end
 	local _, class = readable(UnitClass, unit)
 	local _, race = readable(UnitRace, unit)

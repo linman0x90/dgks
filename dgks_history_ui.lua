@@ -982,6 +982,7 @@ local function addTooltipLines(tooltip, unit)
 	local isPlayer = UnitIsPlayer(unit)
 	if isPlayer ~= true or UnitIsUnit(unit, "player") == true then return end
 	local name, realm = UnitFullName(unit)
+	name, realm = dgks.SplitName(name, realm) -- WoW Forever: the second value is the surname
 	if not usableString(name) then return end
 	if usableString(realm) then name = name .. "-" .. realm end
 

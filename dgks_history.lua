@@ -308,6 +308,8 @@ local function opponentInfo(rec, guid)
 	rec.p = 1
 	local ok, _, classFile, _, raceFile, _, name, realm = pcall(GetPlayerInfoByGUID, guid)
 	if not ok then return end
+	-- On WoW Forever "realm" is the surname: make it "First Last" with no realm
+	name, realm = dgks.SplitName(name, realm)
 	if usable(classFile, "string") and classFile ~= "" then rec.oc = classFile end
 	if usable(raceFile, "string") and raceFile ~= "" then rec.orc = raceFile end
 	if usable(name, "string") and name ~= "" and not rec.o:find("-", 1, true) then
@@ -355,6 +357,7 @@ function H:RecordTeamKill(killerGUID, victimGUID)
 	local function info(guid)
 		local ok, _, classFile, _, _, _, name, realm = pcall(GetPlayerInfoByGUID, guid)
 		if not ok or not usable(name, "string") or name == "" then return nil end
+		name, realm = dgks.SplitName(name, realm)
 		if not usable(realm, "string") or realm == "" then realm = myRealm end
 		return name .. "-" .. realm, usable(classFile, "string") and classFile or nil
 	end
