@@ -64,48 +64,8 @@ end
 
 dgks = LibStub("AceAddon-3.0"):NewAddon("dgks", "AceEvent-3.0", "AceConsole-3.0", "LibSink-2.0","AceComm-3.0","AceSerializer-3.0")
 
--- Overview tab of the dG KillShot window: record and streak tiles, Top 5 lists
-local function giveOverview()
-	local options = {
-		type = "group",
-		name = "Overview",
-		args = {
-			version = {
-				type = "description",
-				name = "|cff9d9d9dVersion " .. version .. "|r\n",
-				order = 2
-			},
-			-- The record tiles and Top 5 lists are added below from dgks_history_ui.lua
-			streak = dgks.History.Tile(15, "Kill streak", streak, "ff40ff40"),
-			maxstreak = dgks.History.Tile(16, "Best streak", dgks.db.profile.maxstreak, "ffffd100"),
-			deathstreak = dgks.History.Tile(17, "Death streak", deathstreak, "ffff4040"),
-			maxdeathstreak = dgks.History.Tile(18, "Worst streak", dgks.db.profile.maxdeathstreak, "ffff8040"),
-			--@debug@
-			-- Dev Debugging functions
-			testdgkskill = {
-				type = 'execute',
-				name = 'Simulate Killshot',
-				order = 90,
-				func = function()
-					dgks:Test()
-				end
-			},
-			testdgdeath = {
-				type = 'execute',
-				name = 'Simulate Death',
-				order = 91,
-				func = function()
-					dgks:TestPlayerDeath()
-				end
-			}
-			--@end-debug@
-		}
-	}
-	for key, option in pairs(dgks.History:MainOptionArgs(10)) do
-		options.args[key] = option
-	end
-	return options
-end
+-- Shown in the dG KillShot window
+dgks.version = version
 
 -- Settings > History tab: history options, then the reset and clear buttons
 local function giveHistorySettings()
@@ -1098,8 +1058,7 @@ function dgks:OnInitialize()
 	-- Setup Config Screens
 	local AceConfigRegistry = LibStub("AceConfigRegistry-3.0")
 
-	-- The dG KillShot window (dgks_history_ui.lua) draws the Overview and Settings tables in its tabs
-	AceConfigRegistry:RegisterOptionsTable("dG KillShot Overview", giveOverview)
+	-- The dG KillShot window (dgks_window.lua) draws the Settings table in its Settings tab
 	AceConfigRegistry:RegisterOptionsTable("dG KillShot Settings", giveSettings)
 	AceConfigRegistry:RegisterOptionsTable("dG KillShot File Setup", giveSoundFileSetup)
 

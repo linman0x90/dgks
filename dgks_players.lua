@@ -43,12 +43,13 @@ local function str(v)
 	return type(v) == "string" and not isSecret(v) and v ~= "" and v or nil
 end
 
--- Spec ID -> localized spec name, class file
+-- Spec ID -> localized spec name, class file, spec icon
 function P.SpecInfo(specID)
 	if type(specID) ~= "number" or not GetSpecializationInfoByID then return nil end
-	local ok, id, name, _, _, _, classFile = pcall(GetSpecializationInfoByID, specID)
+	local ok, id, name, _, icon, _, classFile = pcall(GetSpecializationInfoByID, specID)
 	if not ok or isSecret(name) or type(name) ~= "string" then return nil end
-	return name, classFile
+	if isSecret(icon) then icon = nil end
+	return name, classFile, icon
 end
 
 -- This character's spec ID, or nil (Classic Era has none)
