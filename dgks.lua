@@ -1299,7 +1299,7 @@ function dgks:KillshotTX(txvictim,txtimestamp,txvictimGUID)
 	
 	-- Handle it locally first: sounds and text must not depend on our own broadcast coming back
 	-- (it does not when we are in no guild or group, or when addon messages are locked down).
-	self:ProcessKillshot("dgks", playerName, txvictim, txtimestamp, streak, multikill, true)
+	self:ProcessKillshot("dgks", playerName, txvictim, txtimestamp, streak, multikill, true, txvictimGUID)
 	self.History:Record("K", txvictim, txvictimGUID, streak, multikill)
 
 	-- Then broadcast our Killshot to other dgks users. Our own echo is dropped in OnCommReceived.
@@ -1338,7 +1338,7 @@ function dgks:PlayerLoss(myKiller)
 	dgks.History:Record("L", myKiller)
 	if dgks.db.profile.doscreenshotonduelloss then Screenshot() end
 	if dgks.db.profile.duelemoteloss ~= "none" then
-		DoEmote(dgks.db.profile.duelemoteloss, myKiller)
+		dgks:EmoteAt(dgks.db.profile.duelemoteloss, nil, myKiller)
 	end
 end
 
@@ -1407,10 +1407,50 @@ function dgks:IsOwnSender(sender)
 	return false
 end
 
+-- Emotes at a player go through a unit token. DoEmote with a name makes the game look the name up,
+-- and a name it cannot find (a player from another realm without the realm, an NPC, "Unknown
+-- Entity") prints "No player named ... is currently playing". When nobody nearby matches, the emote
+-- has no target ("none"), so it never lands on whoever else we have targeted.
+local EMOTE_UNITS = { "target", "focus", "mouseover", "softenemy" }
+for i = 1, 40 do EMOTE_UNITS[#EMOTE_UNITS + 1] = "nameplate" .. i end
+
+-- The names a unit can be written as: "Name", "Name-Realm", and on Forever "First Surname"
+local function unitNames(unit)
+	local ok, name, second = pcall(UnitName, unit)
+	if not ok or isSecret(name) or type(name) ~= "string" then return {} end
+	local names = { [name] = true }
+	local full, realm = dgks.SplitName(name, second)
+	if full then names[full] = true end
+	if full and realm then names[full .. "-" .. realm] = true end
+	return names
+end
+
+local function unitFor(guid, name)
+	if isSecret(guid) then guid = nil end
+	if isSecret(name) or type(name) ~= "string" then name = nil end
+	if not guid and not name then return nil end
+	for _, unit in ipairs(EMOTE_UNITS) do
+		local ok, g = pcall(UnitGUID, unit)
+		if ok and g ~= nil and not isSecret(g) then
+			if guid then
+				if g == guid then return unit end
+			elseif unitNames(unit)[name] then
+				return unit
+			end
+		end
+	end
+	return nil
+end
+
+-- guid and/or name of the player to emote at
+function dgks:EmoteAt(emote, guid, name)
+	DoEmote(emote, unitFor(guid, name) or "none")
+end
+
 -- Handle one killshot ("dgks") or duel result ("dgksDUEL"): play the sound, show the text, do
 -- emotes/screenshots and update the stats. Called directly for our own kills (isLocal = true) and
 -- from OnCommReceived for kills broadcast by other dgks users (isLocal = false).
-function dgks:ProcessKillshot(cchan, rxkiller, rxvictim, rxtimestamp, rxstreak, rxmultikill, isLocal)
+function dgks:ProcessKillshot(cchan, rxkiller, rxvictim, rxtimestamp, rxstreak, rxmultikill, isLocal, victimGUID)
 	-- The values may come from another player's client: ignore anything that is not shaped like a kill
 	if type(rxkiller) ~= "string" or type(rxvictim) ~= "string" or type(rxstreak) ~= "number" or type(rxmultikill) ~= "number" then return end
 	if rxmultikill ~= rxmultikill then return end -- NaN
@@ -1443,7 +1483,7 @@ function dgks:ProcessKillshot(cchan, rxkiller, rxvictim, rxtimestamp, rxstreak, 
 			-- fixme targeting doesn't seem to work with NPCs
 			local emote = dgks.db.profile.doemote
 			-- Defer the emote out of the event handler context to avoid tainting the player
-			C_Timer.After(0, function() DoEmote(emote, rxvictim) end)
+			C_Timer.After(0, function() dgks:EmoteAt(emote, victimGUID, rxvictim) end)
 		end
 	else
 		killshottext = string.gsub(string.gsub(dgks.db.profile.dueltext, "$k", killerText), "$v", victimText)
@@ -1457,7 +1497,7 @@ function dgks:ProcessKillshot(cchan, rxkiller, rxvictim, rxtimestamp, rxstreak, 
 			-- fixme targeting doesn't seem to work with NPCs
 			local emote = dgks.db.profile.duelemotewin
 			-- Defer the emote out of the event handler context to avoid tainting the player
-			C_Timer.After(0, function() DoEmote(emote, rxvictim) end)
+			C_Timer.After(0, function() dgks:EmoteAt(emote, victimGUID, rxvictim) end)
 		end
 	end
 
@@ -1845,6 +1885,28 @@ function dgks:SendCM(cchan,msg)
 			--end
 			--@end-debug@
 
+			-- Battle.net friends are whispered by character name. A friend on another realm needs
+			-- "Name-Realm", or the game looks for the name on our realm and prints "No player named
+			-- ... is currently playing". Whispers only reach our realm and its connected realms, so
+			-- friends elsewhere are skipped. On Forever names are unique across the region (no realm).
+			local myRealm = GetNormalizedRealmName and GetNormalizedRealmName()
+			local reachable = {}
+			if myRealm then reachable[myRealm] = true end
+			local getRealms = (C_AutoComplete and C_AutoComplete.GetAutoCompleteRealms) or GetAutoCompleteRealms
+			if getRealms then
+				local ok, realms = pcall(getRealms)
+				if ok and type(realms) == "table" then
+					for _, r in ipairs(realms) do reachable[r] = true end
+				end
+			end
+			local function bnetTarget(game)
+				if dgks.UsesSurnames() then return game.characterName end
+				local realm = type(game.realmName) == "string" and game.realmName:gsub("[%s%-]", "") or ""
+				if realm == "" or realm == myRealm then return game.characterName end
+				if not reachable[realm] then return nil end
+				return game.characterName .. "-" .. realm
+			end
+
 			local totalBFriends, onlineBFriends = BNGetNumFriends()
 			for i = 1, onlineBFriends  do
 				for j = 1, C_BattleNet.GetFriendNumGameAccounts(i) do
@@ -1860,11 +1922,12 @@ function dgks:SendCM(cchan,msg)
 						self:Print("BNET: " .. j .. "Name: " .. game.characterName .. "Realm: " .. game.realmName .. GetRealmName())
 						--@end-debug@
 						--if game.realmName == GetRealmName() and game.factionName == UnitFactionGroup("player") then
-						if game.factionName == UnitFactionGroup("player") then
-							self:SendCommMessage(cchan,msg,"WHISPER",game.characterName)
+						local target = game.factionName == UnitFactionGroup("player") and bnetTarget(game)
+						if target then
+							self:SendCommMessage(cchan,msg,"WHISPER",target)
 
 							--@debug@
-							self:Print("Sending: CChan= " .. cchan .. " " .. msg .. " to WHISPER " .. game.characterName)
+							self:Print("Sending: CChan= " .. cchan .. " " .. msg .. " to WHISPER " .. target)
 							--@end-debug@
 							--C_ChatInfo.SendAddonMessage(prefix, message, "WHISPER", info.name)
 						end
