@@ -693,9 +693,25 @@ end
 -- Settings tab ----------------------------------------------------------------------------------
 -- An AceGUI group inside the panel, which AceConfigDialog fills with the Settings table
 
+-- Give the AceGUI group the panel's size and lay it out again. AceGUI's tab group sizes its tabs
+-- from the width it was given; drawn into a frame the game has not measured yet, that width is 0
+-- and every tab is squeezed against the left edge.
+local function layoutSettings(p)
+	local g = p.group
+	if not g then return end
+	local w, h = (p:GetWidth() or 0) - 12, (p:GetHeight() or 0) - 12
+	if w <= 0 or h <= 0 then return end
+	g:SetWidth(w)
+	g:SetHeight(h)
+	g:DoLayout()
+end
+
 local function createSettings(parent)
 	local p = CreateFrame("Frame", nil, parent)
 	p:SetAllPoints()
+	p:SetScript("OnSizeChanged", function(self)
+		if self:IsShown() then layoutSettings(self) end
+	end)
 	p:SetScript("OnShow", function(self)
 		if not self.group then
 			local g = AceGUI:Create("SimpleGroup")
@@ -710,7 +726,12 @@ local function createSettings(parent)
 			self.group = g
 		end
 		self.group.frame:Show()
+		layoutSettings(self)
 		LibStub("AceConfigDialog-3.0"):Open(SETTINGS_APP, self.group)
+		-- Once more after the game has placed the window
+		C_Timer.After(0, function()
+			if self:IsShown() then layoutSettings(self) end
+		end)
 	end)
 	-- Let go of the option widgets while another tab shows
 	p:SetScript("OnHide", function(self)
