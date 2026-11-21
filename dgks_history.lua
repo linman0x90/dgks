@@ -469,12 +469,20 @@ end
 -- A request to a member that nobody answers (the whisper never arrived, or they logged off) would
 -- otherwise be repeated with every summary they send. After MAX_UNANSWERED misses in a row we leave
 -- that member alone for PEER_BACKOFF seconds; any answer from them clears the count.
+-- This is only done on WoW Forever, where the realm is "" and a failed whisper is likely; on every
+-- other version requests behave exactly as before.
+local function isRealmless()
+	return GetNormalizedRealmName ~= nil and GetNormalizedRealmName() == ""
+end
+
 local function peerQuiet(peer, t)
+	if not isRealmless() then return false end
 	local p = peers[peer]
 	return p ~= nil and p.quietUntil ~= nil and t < p.quietUntil
 end
 
 local function requestMissed(peer, t)
+	if not isRealmless() then return end
 	local p = peers[peer]
 	if not p then
 		p = { missed = 0 }
