@@ -4,4 +4,5 @@ license-output: LICENSE.txt
 
 enable-nolib-creation: no
 
-   
+ignore:
+  - tests
