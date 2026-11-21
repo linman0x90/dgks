@@ -77,6 +77,8 @@ end
 -- Short display name: drop our own realm
 function H.ShortName(name)
 	if type(name) ~= "string" then return "?" end
+	-- WoW Forever has no realm, so a full name is "Name-": drop the dangling hyphen
+	name = name:gsub("%-$", "")
 	local n, r = name:match("^(.-)%-(.+)$")
 	if n and r == myRealm then return n end
 	return name
@@ -114,7 +116,18 @@ local function canSend()
 	return instanceType == "pvp" or instanceType == "arena"
 end
 
+-- WoW Forever has no realms: GetNormalizedRealmName() is "" there. The empty-realm fixes only run on Forever.
+local function isRealmless()
+	return GetNormalizedRealmName ~= nil and GetNormalizedRealmName() == ""
+end
+
 local function send(dist, target, prio, ...)
+	-- WoW Forever returns an empty realm, so a full name (the guild roster, a sender) ends up as "Name-".
+	-- The client cannot whisper that and prints "No player named 'Name-' is currently playing." for every
+	-- reply, and because the whisper never arrives the sync keeps retrying. Whisper the bare name.
+	if dist == "WHISPER" and isRealmless() and usable(target, "string") then
+		target = target:gsub("%-$", "")
+	end
 	queue[#queue + 1] = { msg = dgks:Serialize(...), dist = dist, target = target, prio = prio }
 end
 
@@ -667,8 +680,11 @@ end
 -- GetNormalizedRealmName (no spaces or hyphens). A name without a realm belongs to defaultRealm.
 function H.PlayerKey(name, defaultRealm)
 	if type(name) ~= "string" or name == "" then return nil end
-	local n, realm = name:match("^([^%-]+)%-(.+)$")
+	-- "Name-" (an empty realm, as on WoW Forever) belongs to defaultRealm, like a bare "Name", so both
+	-- forms give the same key. Otherwise "Name-" came out as "Name--" and never matched a lookup by "Name".
+	local n, realm = name:match("^([^%-]+)%-(.*)$")
 	if not n then n, realm = name, defaultRealm or myRealm end
+	if realm == "" then realm = defaultRealm or myRealm end
 	if not realm then return nil end
 	return n .. "-" .. realm:gsub("[%s%-]", "")
 end
