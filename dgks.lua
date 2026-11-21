@@ -64,6 +64,20 @@ end
 
 dgks = LibStub("AceAddon-3.0"):NewAddon("dgks", "AceEvent-3.0", "AceConsole-3.0", "LibSink-2.0","AceComm-3.0","AceSerializer-3.0")
 
+-- WoW Forever has no realms: GetNormalizedRealmName() is "" there, and the second value that
+-- GetPlayerInfoByGUID, UnitFullName and UnitNameFromGUID return is the character's surname, not a realm
+-- ("Israphel", "Faithbane" is the player "Israphel Faithbane"). Everywhere else it is the realm.
+-- Takes those two values and returns the name and the realm, with the surname put back into the name
+-- on Forever (and the realm then ""), so callers can treat both clients the same way.
+function dgks.SplitName(name, second)
+	if type(name) ~= "string" or isSecret(name) then return name, second end
+	if type(second) ~= "string" or isSecret(second) or second == "" then return name, second end
+	if GetNormalizedRealmName and GetNormalizedRealmName() == "" then
+		return name .. " " .. second, ""
+	end
+	return name, second
+end
+
 -- Overview tab of the dG KillShot window: record and streak tiles, Top 5 lists
 local function giveOverview()
 	local options = {
@@ -1947,8 +1961,10 @@ if classic then
 			local _, _, _, _, _, vName, playerServer = GetPlayerInfoByGUID(targetGUID)
 			if vName == nil then
 				--Could be an NPC, if in an instance even we will still get nil
-				vName, playerServer = UnitNameFromGUID(targetGUID)		
+				vName, playerServer = UnitNameFromGUID(targetGUID)
 			end
+			-- On WoW Forever the "server" is the surname: announce "First Last", not just "First"
+			vName, playerServer = dgks.SplitName(vName, playerServer)
 			if vName ~= nil then
 				--@debug@
 				dgks:Print("DEBUG: " .. "Sending "..vName.." and "..timestamp.." to KillshotTX." )
@@ -1988,6 +2004,7 @@ if classic then
 		if type(targetGUID) ~= "string" or targetGUID ~= UnitGUID("player") then return nil end
 		local ok, name, realm = pcall(UnitFullName, unit)
 		if not ok or isSecret(name) or type(name) ~= "string" or name == "" then return nil end
+		name, realm = dgks.SplitName(name, realm)
 		if isSecret(realm) or type(realm) ~= "string" or realm == "" then realm = GetNormalizedRealmName() end
 		local guid = readable(UnitGUID, unit)
 		return name .. "-" .. realm, (type(guid) == "string") and guid or nil
@@ -2159,7 +2176,10 @@ function dgks:OnEnable()
 	
 	--Setup variables
 	playerGUID = UnitGUID("player")
-	playerClass, _, playerRace, playerSex, _, playerName, _ = GetPlayerInfoByGUID(playerGUID)
+	local playerRealmPart
+	playerClass, _, playerRace, playerSex, _, playerName, playerRealmPart = GetPlayerInfoByGUID(playerGUID)
+	-- On WoW Forever this gives "First" and "Last" separately; everyone else sees the full "First Last"
+	playerName = dgks.SplitName(playerName, playerRealmPart)
 
 	self.History:Enable()
 	self.Players:Enable()
