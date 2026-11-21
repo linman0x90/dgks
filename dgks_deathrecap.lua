@@ -701,3 +701,12 @@ function dgks:ToggleDeathRecap()
 		dgks:Print("No death recap yet this session.")
 	end
 end
+
+-- Close the recap when the player is alive again: a resurrection accepted, a soulstone or
+-- Reincarnation, the spirit healer, or a corpse run. PLAYER_ALIVE also fires on releasing to a
+-- ghost, so the recap stays open until the player is actually back.
+local aliveWatcher = CreateFrame("Frame")
+for _, event in ipairs({ "PLAYER_ALIVE", "PLAYER_UNGHOST" }) do pcall(aliveWatcher.RegisterEvent, aliveWatcher, event) end
+aliveWatcher:SetScript("OnEvent", function()
+	if not UnitIsDeadOrGhost("player") then fadeOut() end
+end)
