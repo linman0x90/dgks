@@ -871,6 +871,17 @@ function H:ToggleWindow()
 	dgks:ToggleMainWindow("history")
 end
 
+-- Redraw the Settings tab, e.g. when version check replies arrive. AceConfigRegistry's
+-- NotifyChange only redraws AceConfigDialog's own windows, not this embedded one.
+function dgks:RefreshSettingsTab()
+	if not frame or not frame:IsShown() or current ~= "settings" then return end
+	local p = panels.settings
+	if p and p.group then
+		LibStub("AceConfigDialog-3.0"):Open(SETTINGS_APP, p.group)
+		layoutSettings(p)
+	end
+end
+
 -- Redraw what shows after history changes
 function dgks:RefreshMainWindow()
 	if not frame or not frame:IsShown() then return end
