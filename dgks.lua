@@ -566,9 +566,20 @@ local function giveBroadcasts()
 				type = 'execute',
 				width = "full",
 				name = 'Check other players versions',
-				desc = 'Check Versions',
+				desc = 'Ask the players dG KillShot broadcasts to (guild, group, friends) which version they run. Replies are listed below.',
 				func = "VersionCheck",
+				disabled = function()
+					return not dgks.db.profile.dobroadcasts
+				end,
 				order = 130
+			},
+			versionresults = {
+				type = 'description',
+				fontSize = "medium",
+				name = function() return dgks:VersionCheckText() end,
+				hidden = function() return dgks.versionCheck == nil end,
+				width = "full",
+				order = 131
 			}
 		}
 	}
@@ -1430,7 +1441,8 @@ function dgks:OnCommReceived(cchan, message, distribution, sender)
 	self:Print("OnCommReceived: CChan= " .. cchan .. " " .. message .. distribution .. sender)
 	--@end-debug@
 	if cchan == "dgksVR" then
-		if sender ~= playerName then self:Print(sender .. " is on version " .. message) end
+		-- Listed in Settings > Broadcasts under the version check button
+		if sender ~= playerName then self:VersionReply(sender, message) end
 
 	elseif cchan == "dgksV" then
 		-- Check for duplicates here
@@ -1829,9 +1841,71 @@ function dgks:ScrollText(msg)
 	end
 end
 
+-- Version check: ask everyone we broadcast to for their version. Replies (dgksVR) are listed in
+-- Settings > Broadcasts, under the button, instead of in chat.
 -- FIXME Entire version checking needs cleanup for duplicate sends
 function dgks:VersionCheck()
-    self:SendCM("dgksV",version)
+	dgks.versionCheck = { at = time(), replies = {} }
+	self:SendCM("dgksV",version)
+	self:RefreshSettings()
+end
+
+function dgks:VersionReply(sender, theirs)
+	if not dgks.versionCheck or type(sender) ~= "string" or type(theirs) ~= "string" then return end
+	dgks.versionCheck.replies[sender] = theirs:sub(1, 40)
+	self:RefreshSettings()
+end
+
+-- "12.0.010" -> { 12, 0, 10 }; nil for anything else (a development copy shows "@project-version@")
+local function versionParts(v)
+	if type(v) ~= "string" then return nil end
+	local a, b, c = v:match("^v?(%d+)%.(%d+)%.(%d+)")
+	if not a then return nil end
+	return { tonumber(a), tonumber(b), tonumber(c) }
+end
+
+-- -1 when a is older than b, 1 when newer, 0 when the same or either cannot be read
+local function compareVersions(a, b)
+	local pa, pb = versionParts(a), versionParts(b)
+	if not pa or not pb then return 0 end
+	for i = 1, 3 do
+		if pa[i] ~= pb[i] then return pa[i] < pb[i] and -1 or 1 end
+	end
+	return 0
+end
+dgks.CompareVersions = compareVersions
+
+function dgks:VersionCheckText()
+	local check = dgks.versionCheck
+	if not check then return "" end
+	local lines = { "|cffffd100Your version:|r " .. tostring(version) }
+	local names = {}
+	for name in pairs(check.replies) do names[#names + 1] = name end
+	table.sort(names, function(a, b) return a:lower() < b:lower() end)
+	if #names == 0 then
+		lines[#lines + 1] = "|cff999999Waiting for replies...|r"
+	else
+		lines[#lines + 1] = "|cffffd100Replies (" .. #names .. "):|r"
+		local short = dgks.History and dgks.History.ShortName
+		for _, name in ipairs(names) do
+			local theirs = check.replies[name]
+			local cmp, note = compareVersions(theirs, version), ""
+			if cmp < 0 then
+				note = "  |cffff5555(older)|r"
+			elseif cmp > 0 then
+				note = "  |cff33ff99(newer)|r"
+			end
+			lines[#lines + 1] = "    " .. (short and short(name) or name) .. ": " .. theirs .. note
+		end
+	end
+	return table.concat(lines, "\n")
+end
+
+-- Redraw the settings pages wherever they show
+function dgks:RefreshSettings()
+	local registry = LibStub("AceConfigRegistry-3.0", true)
+	if registry then registry:NotifyChange("dG KillShot Settings") end
+	if self.RefreshSettingsTab then self:RefreshSettingsTab() end
 end
 
 function dgks:dgks_SoundPack(sound)
