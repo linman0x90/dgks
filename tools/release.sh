@@ -7,12 +7,33 @@
 #
 # notes.md is the release body in Markdown, without the "# dG KillShot x" title line (the
 # release title is set to that). The tag push starts the CurseForge build through its webhook.
+#
+# Exit codes (run it unpiped, or with pipefail, so the caller sees them):
+#   0  released (or, with --check, the package was found and passed)
+#   1  stopped before anything was published, or the tag push / GitHub release failed
+#   2  published on GitHub, but no CurseForge file appeared in time (rerun with --check later)
+#   3  the CurseForge package was found but failed the check
 set -euo pipefail
 
+# The whole script is one { ... } block, so bash reads all of it before running any of it.
+# Editing this file while a release runs then cannot change what the running copy does.
+{
+
 PROJECT_ID=14980
-WAIT_SECONDS=600
+WAIT_SECONDS="${RELEASE_WAIT_SECONDS:-1800}"
 
 die() { echo "release: $*" >&2; exit 1; }
+fail() { local code="$1"; shift; echo "release: $*" >&2; exit "$code"; }
+
+# Git for Windows prints a harmless "credential-manager" warning on every fetch and push. Drop
+# those lines here, so callers never need to pipe this script (a pipe hides its exit code).
+git_quiet() {
+	local out status=0
+	out="$(git "$@" 2>&1)" || status=$?
+	printf '%s
+' "$out" | grep -vi -e "credential-manager" -e "most similar command" -e '^[[:space:]]*$' >&2 || true
+	return "$status"
+}
 step() { echo; echo "== $*"; }
 
 check_only=0
@@ -39,7 +60,7 @@ if [ "$check_only" = 0 ]; then
 	branch="$(git rev-parse --abbrev-ref HEAD)"
 	[ "$branch" = "main" ] || die "on branch '$branch', not main"
 	[ -z "$(git status --porcelain)" ] || die "working tree has uncommitted changes"
-	git fetch -q --tags origin
+	git_quiet fetch -q --tags origin
 	[ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ] || die "local main differs from origin/main (pull or push first)"
 	! git rev-parse -q --verify "refs/tags/$version" >/dev/null || die "tag $version already exists"
 	prev="$(git describe --tags --abbrev=0 2>/dev/null || true)"
@@ -55,14 +76,14 @@ if [ "$check_only" = 0 ]; then
 	step "Tag $version"
 	# Lightweight tags, like the earlier releases
 	git tag "$version" HEAD
-	git push -q origin "$version"
+	git_quiet push -q origin "$version" || die "could not push tag $version (it exists locally; delete it with 'git tag -d $version' before retrying)"
 	echo "Pushed tag $version at $(git rev-parse --short HEAD)"
 
 	step "GitHub release"
 	body="$(mktemp)"
 	# Drop a UTF-8 BOM, which GitHub would show as a stray character
 	sed '1s/^\xEF\xBB\xBF//' "$notes" > "$body"
-	"$gh" release create "$version" --verify-tag --title "dG KillShot $version" --notes-file "$body"
+	"$gh" release create "$version" --verify-tag --title "dG KillShot $version" --notes-file "$body" 		|| die "tag $version is pushed, but creating the GitHub release failed; create it by hand or with gh"
 	rm -f "$body"
 fi
 
@@ -83,7 +104,7 @@ for f in data:
         break
 ' "$version" || true)"
 	[ -n "$file_id" ] && break
-	[ "$SECONDS" -lt "$deadline" ] || die "no CurseForge file for $version after $((WAIT_SECONDS / 60)) minutes; check the project's webhook and build log on CurseForge"
+	[ "$SECONDS" -lt "$deadline" ] || fail 2 "no CurseForge file for $version after $((WAIT_SECONDS / 60)) minutes; check the project's webhook and build log on CurseForge"
 	sleep 20
 done
 created="${file_id#* }"
@@ -94,8 +115,8 @@ step "Package check"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 zip="$work/dgks-$version.zip"
-curl -sL -A "Mozilla/5.0" -o "$zip" "https://www.curseforge.com/api/v1/mods/$PROJECT_ID/files/$file_id/download"
-"$py" -I - "$zip" "$version" <<'EOF'
+curl -sfL -A "Mozilla/5.0" -o "$zip" "https://www.curseforge.com/api/v1/mods/$PROJECT_ID/files/$file_id/download" 	|| fail 3 "could not download CurseForge file $file_id"
+"$py" -I - "$zip" "$version" <<'EOF' || fail 3 "the CurseForge package for $version failed the check (see above)"
 import re, sys, zipfile
 
 path, version = sys.argv[1], sys.argv[2]
@@ -133,3 +154,6 @@ EOF
 echo
 if [ "$check_only" = 1 ]; then echo "Package for $version checked."; else echo "Released $version."; fi
 echo "The downloaded package has been deleted."
+
+exit 0
+}
