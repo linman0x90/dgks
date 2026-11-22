@@ -46,7 +46,7 @@ local queue = {}          -- outgoing messages waiting for a moment when sending
 local pending = {}        -- [stream] = { peer = name, at = time } requests we are waiting on
 local roster = {}         -- [Name-Realm] = { online = bool, target = name as the roster spells it }
 local rosterAt = 0        -- when we last asked the server for the roster
-local whispered = {}      -- [lowercased name] = time of our last sync whisper to it
+local whispered = {}      -- [lowercased name] = time of our last addon whisper to it
 local nextSummaryAt = 0
 local myName, myRealm, guildKey
 
@@ -145,6 +145,25 @@ local function whisperTarget(name)
 	return m.target
 end
 
+-- The game answers an addon whisper that finds nobody with "No player named ... is currently
+-- playing": a guild member or friend who logs off with our message on its way, a Battle.net friend
+-- the game cannot reach by that name. Every addon whisper (sync, kill and version messages to
+-- friends, version replies) goes through dgks:SendCommMessage, so note each target there and hide
+-- that line for names we whispered in the last minute.
+local function noteWhisper(target)
+	if type(target) ~= "string" or isSecret(target) then return end
+	local t = now()
+	whispered[target:lower()] = t
+	-- The line may name the player without the realm we added
+	local base = target:match("^(.-)%-[^%-]+$")
+	if base and base ~= "" then whispered[base:lower()] = t end
+end
+local aceSendCommMessage = dgks.SendCommMessage
+function dgks:SendCommMessage(prefix, text, distribution, target, ...)
+	if distribution == "WHISPER" then noteWhisper(target) end
+	return aceSendCommMessage(self, prefix, text, distribution, target, ...)
+end
+
 local function flushQueue()
 	if #queue == 0 or not canSend() then return end
 	local q = queue
@@ -153,15 +172,14 @@ local function flushQueue()
 		local target = m.target
 		if m.dist == "WHISPER" then target = whisperTarget(m.target) end
 		if m.dist ~= "WHISPER" or target then
-			if target then whispered[target:lower()] = now() end
+			if target then noteWhisper(target) end -- also kept if another addon re-embeds AceComm
 			local ok = pcall(dgks.SendCommMessage, dgks, PREFIX, m.msg, m.dist, target, m.prio)
 			if not ok then break end -- the rest is lost; the next summary round repairs it
 		end
 	end
 end
 
--- A member who logs off while our answer is on its way still triggers "No player named ..." for
--- the pieces already sent. Hide that line for names we whispered sync data to in the last minute.
+-- Hide "No player named ..." for a name we whispered in the last minute (see noteWhisper)
 local function hidePlayerNotFound(_, _, msg, ...)
 	if type(msg) ~= "string" or isSecret(msg) or type(ERR_CHAT_PLAYER_NOT_FOUND_S) ~= "string" then return false end
 	local pattern = "^" .. ERR_CHAT_PLAYER_NOT_FOUND_S:gsub("[%^%$%(%)%%%.%[%]%*%+%-%?]", "%%%0"):gsub("%%%%s", "(.+)") .. "$"
