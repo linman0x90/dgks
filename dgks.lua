@@ -99,6 +99,20 @@ function dgks.SplitName(name, second)
 	return name, second
 end
 
+-- This character's realm, written like GetNormalizedRealmName ("Area52": no spaces or hyphens), or
+-- nil if the game doesn't say. GetNormalizedRealmName can come back empty (Forever), so fall back
+-- to GetRealmName. Never "": a name built as name .. "-" .. realm would end in a bare "-".
+function dgks.RealmName()
+	local ok, realm = pcall(GetNormalizedRealmName)
+	if ok and not isSecret(realm) and type(realm) == "string" and realm ~= "" then return realm end
+	ok, realm = pcall(GetRealmName)
+	if ok and not isSecret(realm) and type(realm) == "string" then
+		realm = realm:gsub("[%s%-]", "")
+		if realm ~= "" then return realm end
+	end
+	return nil
+end
+
 -- This character's name: "First Surname" on Forever, the plain name elsewhere
 function dgks.PlayerFullName()
 	return dgks.SplitName(UnitName("player"))
@@ -1950,7 +1964,7 @@ function dgks:SendCM(cchan,msg)
 			-- "Name-Realm", or the game looks for the name on our realm and prints "No player named
 			-- ... is currently playing". Whispers only reach our realm and its connected realms, so
 			-- friends elsewhere are skipped. On Forever names are unique across the region (no realm).
-			local myRealm = GetNormalizedRealmName and GetNormalizedRealmName()
+			local myRealm = dgks.RealmName()
 			local reachable = {}
 			if myRealm then reachable[myRealm] = true end
 			local getRealms = (C_AutoComplete and C_AutoComplete.GetAutoCompleteRealms) or GetAutoCompleteRealms
@@ -2130,9 +2144,9 @@ if classic then
 		if not ok then return nil end
 		name, realm = dgks.SplitName(name, realm) -- Forever: "First Surname", no realm
 		if not name then return nil end
-		if not realm then realm = GetNormalizedRealmName() end
+		realm = realm or dgks.RealmName()
 		local guid = readable(UnitGUID, unit)
-		return name .. "-" .. realm, (type(guid) == "string") and guid or nil
+		return realm and (name .. "-" .. realm) or name, (type(guid) == "string") and guid or nil
 	end
 
 	function events:UNIT_TARGET(unit)

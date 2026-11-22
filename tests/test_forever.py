@@ -62,6 +62,18 @@ check("kill broadcast names the victim First Surname", list(L.eval("SENT").value
 r = die(L, "RECAP = { { sourceName = SECRET } }; UNITS = { nameplate1 = { player = true, enemy = true, targetsMe = true, name = 'Ann', realm = 'Smith', guid = 'Player-4-ANN' } }")
 check("likely killer is First Surname on our realm, not First-Surname", r and r[0] == "Ann Smith-Realm", r)
 
+# Forever's normalized realm name can be empty: the realm then comes from GetRealmName, never ""
+GUESS = "RECAP = { { sourceName = SECRET } }; UNITS = { nameplate1 = { player = true, enemy = true, targetsMe = true, name = 'Ann', realm = 'Smith', guid = 'Player-4-ANN' } }"
+L.execute("GetNormalizedRealmName = function() return '' end; GetRealmName = function() return 'CAMWOW US2-Realm' end")
+check("RealmName falls back to GetRealmName, normalized", L.eval("dgks.RealmName()") == "CAMWOWUS2Realm", L.eval("dgks.RealmName()"))
+r = die(L, GUESS)
+check("empty normalized realm: likely killer gets the realm from GetRealmName, no bare dash", r and r[0] == "Ann Smith-CAMWOWUS2Realm", r)
+L.execute("GetRealmName = function() return '' end")
+check("no realm at all: RealmName is nil, not ''", L.eval("dgks.RealmName()") is None)
+r = die(L, GUESS)
+check("no realm at all: likely killer is the bare name", r and r[0] == "Ann Smith", r)
+L.execute("GetNormalizedRealmName = function() return 'Realm' end; GetRealmName = nil")
+
 # Duel messages with full or first-only names
 L.execute(r'''
 DUEL_WINNER_KNOCKOUT = "%1$s has defeated %2$s in a duel"
@@ -148,5 +160,26 @@ check("tooltip counts found for First Surname", mine["K"] == 1)
 
 # Window subtitle uses the full name
 check("PlayerFullName (window subtitle)", H.eval("(dgks.PlayerFullName())") == "Me Smith")
+
+# Names saved with an empty realm ("Zed Stone-") by earlier versions
+check("display drops a bare trailing dash", H.eval("dgks.History.ShortName('Zed Stone-')") == "Zed Stone")
+check("tooltip/opponent key treats 'Zed Stone-' as 'Zed Stone'",
+      H.eval("dgks.History.PlayerKey('Zed Stone-')") == H.eval("dgks.History.PlayerKey('Zed Stone')") == "Zed Stone-Realm")
+check("FullName drops a bare trailing dash", H.eval("dgks.History.FullName('Zed Stone-')") == "Zed Stone-Realm")
+H.execute(r'''
+local recs = dgks.db.char.history.records
+recs[#recs+1] = { k = "D", t = NOW, o = "Zed Stone-", a = "Me Smith-Realm", g = 1 }
+recs[#recs+1] = { k = "X", t = NOW, o = "Bob Brown-Far", kn = "Ann Smith-", a = "Me Smith-Realm" }
+recs[#recs+1] = { k = "K", t = NOW, o = "Ann Smith-Other", a = "Me Smith-Realm" }
+dgks.db.global.history.guilds["G-Realm"] = { streams = { ["Bo Reed-Elsewhere#1"] = { h = 1, r = { { k = "D", t = NOW, o = "Zed Stone-", a = "Bo Reed-Elsewhere", e = 1, s = 1 } } } } }
+dgks.History:RepairEmptyRealms()
+''')
+n = H.eval("#dgks.db.char.history.records")
+rec = lambda i: H.eval(f"dgks.db.char.history.records[{i}]")
+check("repair: personal death gets our realm", rec(n - 2)["o"] == "Zed Stone-Realm", rec(n - 2)["o"])
+check("repair: team kill killer gets our realm, victim untouched", rec(n - 1)["kn"] == "Ann Smith-Realm" and rec(n - 1)["o"] == "Bob Brown-Far")
+check("repair: names with a realm untouched", rec(n)["o"] == "Ann Smith-Other")
+g = H.eval("dgks.db.global.history.guilds['G-Realm'].streams['Bo Reed-Elsewhere#1'].r[1]")
+check("repair: guild record gets its author's realm, author unchanged", g["o"] == "Zed Stone-Elsewhere" and g["a"] == "Bo Reed-Elsewhere", g["o"])
 print("FAILS:", fails)
 sys.exit(1 if fails else 0)

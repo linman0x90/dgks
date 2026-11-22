@@ -62,16 +62,20 @@ local function usable(v, wantType)
 end
 
 local function realmName()
-	local realm = GetNormalizedRealmName and GetNormalizedRealmName()
-	if usable(realm, "string") and realm ~= "" then return realm end
-	realm = GetRealmName and GetRealmName()
-	if usable(realm, "string") then return (realm:gsub("[%s%-]", "")) end
-	return "Unknown"
+	return dgks.RealmName() or "Unknown"
+end
+
+-- "Name-" (an empty realm: the likely-killer guess wrote these on Forever, where the game's
+-- normalized realm name is empty) -> "Name"
+local function dropEmptyRealm(name)
+	return (name:gsub("%-+$", ""))
 end
 
 -- "Name" -> "Name-Realm" (our realm); "Name-Realm" stays as it is
 function H.FullName(name)
-	if not usable(name, "string") or name == "" then return nil end
+	if not usable(name, "string") then return nil end
+	name = dropEmptyRealm(name)
+	if name == "" then return nil end
 	if name:find("-", 1, true) then return name end
 	return name .. "-" .. (myRealm or realmName())
 end
@@ -79,6 +83,7 @@ end
 -- Short display name: drop our own realm
 function H.ShortName(name)
 	if type(name) ~= "string" then return "?" end
+	name = dropEmptyRealm(name)
 	local n, r = name:match("^(.-)%-(.+)$")
 	if n and r == myRealm then return n end
 	return name
@@ -670,6 +675,27 @@ end
 
 -- Copy the old killList/deathList (name -> list of "mm/dd/yy HH:MM:SS") into personal history once.
 -- Those lists live in the shared profile, so they go to the first character that loads this version.
+-- Names saved as "Name-" (see dropEmptyRealm) get the realm they were meant to have: the author's.
+-- Authors are never changed: guild streams are keyed by them.
+function H:RepairEmptyRealms()
+	local function repair(rec)
+		local realm = rec.a and rec.a:match("%-([^%-]+)$") or myRealm
+		for _, field in ipairs({ "o", "kn" }) do
+			local v = rec[field]
+			if type(v) == "string" and v:sub(-1) == "-" then
+				v = dropEmptyRealm(v)
+				if v ~= "" and realm then rec[field] = v .. "-" .. realm end
+			end
+		end
+	end
+	for _, rec in ipairs(dgks.db.char.history.records) do repair(rec) end
+	for _, store in pairs(dgks.db.global.history.guilds) do
+		for _, st in pairs(store.streams or {}) do
+			for _, rec in pairs(st.r or {}) do repair(rec) end
+		end
+	end
+end
+
 local function importLegacy()
 	local profile = dgks.db.profile
 	if profile.historyLegacyImported then return end
@@ -706,7 +732,9 @@ end
 -- A key that names one player the same way everywhere: "Name-Realm" with the realm written like
 -- GetNormalizedRealmName (no spaces or hyphens). A name without a realm belongs to defaultRealm.
 function H.PlayerKey(name, defaultRealm)
-	if type(name) ~= "string" or name == "" then return nil end
+	if type(name) ~= "string" then return nil end
+	name = dropEmptyRealm(name)
+	if name == "" then return nil end
 	local n, realm = name:match("^([^%-]+)%-(.+)$")
 	if not n then n, realm = name, defaultRealm or myRealm end
 	if not realm then return nil end
@@ -804,6 +832,7 @@ end
 function H:Enable()
 	H:UpdateIdentity()
 	importLegacy()
+	H:RepairEmptyRealms()
 	H:Prune()
 	H:InstallTooltip() -- dgks_history_ui.lua
 
