@@ -275,5 +275,21 @@ check("other system messages untouched", f(None, "CHAT_MSG_SYSTEM", "Alice has c
 clock.now += 120
 check("hidden only for a minute after the whisper", f(None, "CHAT_MSG_SYSTEM", f"No player named '{who}' is currently playing.") is False)
 
+# Whispers outside sync (kill and version messages to friends, version replies) go through the
+# same dgks:SendCommMessage, so the game's error line for them is hidden too
+nf = lambda n: f(None, "CHAT_MSG_SYSTEM", f"No player named '{n}' is currently playing.")
+check("player-not-found shown before a friend is whispered", nf("Fred") is False)
+C.run("dgks:SendCommMessage('dgks', 'x', 'WHISPER', 'Fred')")
+check("player-not-found hidden after a kill whisper to a friend", nf("Fred") is True)
+check("matched without regard to case", nf("fred") is True)
+C.run("dgks:SendCommMessage('dgksVR', 'x', 'WHISPER', 'Bea-Otherrealm')")
+check("hidden for a Name-Realm whisper", nf("Bea-Otherrealm") is True)
+check("hidden when the line drops the realm", nf("Bea") is True)
+C.run("dgks:SendCommMessage('dgks', 'x', 'GUILD')")
+check("guild messages still sent", any(x[0] == 'Cara' and x[1] == 'GUILD' for x in net.sent))
+check("whispers still sent", any(x[0] == 'Cara' and x[2] == 'Fred' for x in net.sent))
+clock.now += 120
+check("friend whisper hidden only for a minute", nf("Fred") is False)
+
 print("FAILS:", fails)
 sys.exit(1 if fails else 0)
