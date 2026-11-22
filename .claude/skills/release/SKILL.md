@@ -30,11 +30,19 @@ Publishing a tag and release is outward-facing and starts the CurseForge build t
 
 ## 4. Release
 
-Run from the repo root, with a timeout of at least 15 minutes (it waits up to 10 for CurseForge):
+Run from the repo root, in the background (`run_in_background`), since it waits up to 30 minutes for CurseForge (new files can take 20 minutes or more to show in its public list, probably while CurseForge reviews them):
 
 ```bash
 bash tools/release.sh <version> "<scratchpad>/release-<version>.md"
 ```
+
+Run it exactly like that: no pipe into `grep`, `tail` or the like. A pipe replaces the script's exit code with the last command's, so a failed release looks like a success. The script already drops Git for Windows' "credential-manager" noise itself.
+
+Exit codes:
+- `0`: released, and the CurseForge package passed the check.
+- `1`: stopped before publishing anything (wrong branch, uncommitted changes, failing tests and so on), or the tag push or the GitHub release failed. The message says which.
+- `2`: published on GitHub, but no CurseForge file appeared within 30 minutes.
+- `3`: the CurseForge package was found but failed the check (or could not be downloaded).
 
 The script:
 1. Checks it is on a clean `main` that matches `origin/main`, the tag is new, and there are commits since the last tag.
@@ -44,7 +52,7 @@ The script:
 5. Waits for the CurseForge file for this version.
 6. Downloads the package to a temp folder and checks it has no `tests/`, `tools/`, `.claude/` or `.vscode/`, that `dgks.toc` has the right version and that debug blocks are commented out; then deletes the download.
 
-If the CurseForge step times out or the package check fails after the release was published, rerun only the check later with `bash tools/release.sh --check <version>`. Do not delete or move a pushed tag without the user's say-so.
+On exit code 2, check that the webhook reached CurseForge, without printing its URL (it holds the token): `gh api repos/linman0x90/dgks/hooks/<id>/deliveries --jq '.[] | {delivered_at, status_code}'`. A 200 means CurseForge got the push, so the build is queued, held for review or failed on CurseForge's side; the user can see which on the project's Files page. Rerun only the wait and check later with `bash tools/release.sh --check <version>` (same exit codes; `RELEASE_WAIT_SECONDS` changes the wait). Do not delete or move a pushed tag without the user's say-so.
 
 ## 5. Report
 
