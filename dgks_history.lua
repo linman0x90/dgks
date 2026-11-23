@@ -660,16 +660,46 @@ function H:UpdateIdentity()
 	end
 end
 
+-- Before 12.0.010 a guild whose realm the game does not give (WoW Forever) was keyed "Guild-" (an empty
+-- realm). Now that dgks.RealmName() falls back to "Unknown" it is keyed "Guild-Unknown", so the history saved
+-- under the old key looked lost and its records stopped syncing. Merge the old store into the current one:
+-- a stream that is not there yet is moved over, one that is gets the records it lacks and its head advanced.
+-- It only adds records, and the old store is removed once everything is merged.
+local function mergeLegacyGuildStore(legacyKey)
+	local guilds = dgks.db.global.history.guilds
+	local old = guilds[legacyKey]
+	if type(old) ~= "table" or type(old.streams) ~= "table" then return end
+	local store = guildStore(true)
+	if not store then return end
+	for key, ost in pairs(old.streams) do
+		if type(key) == "string" and type(ost) == "table" and type(ost.r) == "table" then
+			local st = getStream(store, key)
+			for seq, rec in pairs(ost.r) do
+				if st.r[seq] == nil then st.r[seq] = rec end
+			end
+			advanceHead(st)
+		end
+	end
+	guilds[legacyKey] = nil
+	H.countCache = nil
+end
+
 function H:UpdateGuild()
 	local old = guildKey
 	guildKey = nil
+	local legacyKey -- the key this guild had before the realm fell back to "Unknown"
 	if IsInGuild() then
 		local gname, _, _, grealm = GetGuildInfo("player")
 		if usable(gname, "string") and gname ~= "" then
-			if not usable(grealm, "string") or grealm == "" then grealm = myRealm end
+			if not usable(grealm, "string") or grealm == "" then
+				grealm = myRealm
+				if dgks.UsesSurnames() then legacyKey = gname .. "-" end -- Forever only
+			end
 			guildKey = gname .. "-" .. grealm
 		end
 	end
+	-- A failure here must never stop the guild from being set up; the old store is only removed once merged
+	if guildKey and legacyKey and legacyKey ~= guildKey then pcall(mergeLegacyGuildStore, legacyKey) end
 	if guildKey ~= old then
 		wipe(pending)
 		nextSummaryAt = now() + SUMMARY_FIRST_DELAY
