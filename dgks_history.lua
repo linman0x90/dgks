@@ -316,7 +316,7 @@ function H:GuildRecords()
 			else
 				list[#list + 1] = rec
 				if rec.k == "K" then
-					local key = (H.PlayerKey(rec.a) or "?") .. "|" .. (H.OpponentKey(rec) or "?")
+					local key = (H.PlayerKey(H.CanonicalMember(rec.a)) or "?") .. "|" .. (H.OpponentKey(rec) or "?")
 					ownKills[key] = ownKills[key] or {}
 					table.insert(ownKills[key], rec.t)
 				end
@@ -333,7 +333,9 @@ function H:GuildRecords()
 	table.sort(teamKills, function(a, b) return a.t < b.t end)
 	local seen = {}
 	for _, rec in ipairs(teamKills) do
-		local key = (H.PlayerKey(rec.kn, rec.a and rec.a:match("%-(.+)$")) or "?") .. "|" .. (H.OpponentKey(rec) or "?")
+		-- The killer's own record may name them by first name only ("Pink") while the witness wrote the full
+		-- name ("Pink Tonic"): compare them as the same member, or the kill is listed twice
+		local key = (H.PlayerKey(H.CanonicalMember(rec.kn), rec.a and rec.a:match("%-(.+)$")) or "?") .. "|" .. (H.OpponentKey(rec) or "?")
 		if not near(ownKills[key], rec.t) and not near(seen[key], rec.t) then
 			seen[key] = seen[key] or {}
 			table.insert(seen[key], rec.t)
