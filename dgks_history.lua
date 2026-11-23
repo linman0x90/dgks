@@ -47,6 +47,7 @@ local pending = {}        -- [stream] = { peer = name, at = time } requests we a
 local roster = {}         -- [Name-Realm] = { online = bool, target = name as the roster spells it }
 local rosterAt = 0        -- when we last asked the server for the roster
 local whispered = {}      -- [lowercased name] = time of our last addon whisper to it
+local memberCache = {}    -- [name] = canonical member name, see H.CanonicalMember
 local nextSummaryAt = 0
 local myName, myRealm, guildKey
 
@@ -677,15 +678,61 @@ function H:UpdateGuild()
 	end
 end
 
-function H:UpdateRoster()
-	wipe(roster)
-	if not IsInGuild() then return end
-	local n = GetNumGuildMembers() or 0
-	for i = 1, n do
-		local name, _, _, _, _, _, _, _, online = GetGuildRosterInfo(i)
-		if usable(name, "string") then
-			roster[H.FullName(name)] = { online = online == true, target = name }
+-- The name a guild member is listed under. On WoW Forever characters have a first name and a surname, and
+-- versions before 12.0.009 recorded some names as the first name only ("Pink" for "Pink Tonic"), and
+-- team kills are credited to the killer's name as the witnessing client wrote it, so one member could
+-- appear twice in the guild tables and a kill be listed twice. A name without a surname that is the start
+-- of exactly one guild member's full name ("Pink " + "Tonic") is that member. Nothing stored is changed:
+-- this only decides which row a record is counted under. A name is left alone when it is already a full
+-- name, when it is a real one-word member, when two members could match, or when there is no roster yet.
+-- Forever only. Our own realm and a bare "-" are dropped first, like H.ShortName does, so "Pink-Unknown"
+-- (a name saved with this client's stand-in realm) is "Pink".
+function H.CanonicalMember(name)
+	if type(name) ~= "string" or name == "" then return name end
+	if not dgks.UsesSurnames() then return name end
+	name = H.ShortName(name)
+	local cached = memberCache[name]
+	if cached ~= nil then return cached end
+	local result = name
+	if not name:find(" ", 1, true) and not name:find("-", 1, true) then
+		local prefix = name .. " "
+		local found, ambiguous, isMemberName = nil, false, false
+		for full in pairs(roster) do
+			local base = H.ShortName(full)
+			if base == name then
+				isMemberName = true -- a real member with this exact name
+			elseif base:sub(1, #prefix) == prefix then
+				if found and found ~= base then ambiguous = true end
+				found = found or base
+			end
 		end
+		if found and not ambiguous and not isMemberName then result = found end
+	end
+	memberCache[name] = result
+	return result
+end
+
+function H:UpdateRoster()
+	local old = {}
+	for k in pairs(roster) do old[k] = true end
+	wipe(roster)
+	if IsInGuild() then
+		local n = GetNumGuildMembers() or 0
+		for i = 1, n do
+			local name, _, _, _, _, _, _, _, online = GetGuildRosterInfo(i)
+			if usable(name, "string") then
+				roster[H.FullName(name)] = { online = online == true, target = name }
+			end
+		end
+	end
+	-- The roster refreshes often; only redo the member names when the members themselves changed
+	local changed = false
+	for k in pairs(roster) do if not old[k] then changed = true break end end
+	if not changed then for k in pairs(old) do if not roster[k] then changed = true break end end end
+	if changed then
+		wipe(memberCache)
+		-- Only Forever has member names to redo; elsewhere the tables are left exactly as they were
+		if dgks.UsesSurnames() then H:NotifyChanged() end
 	end
 end
 
