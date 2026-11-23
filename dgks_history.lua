@@ -49,6 +49,7 @@ local rosterAt = 0        -- when we last asked the server for the roster
 local whispered = {}      -- [lowercased name] = time of our last addon whisper to it
 local nextSummaryAt = 0
 local myName, myRealm, guildKey
+local legacyKey -- Forever: the key this guild had before the realm fell back to "Unknown" ("Guild-"); still heard
 
 -- Helpers -------------------------------------------------------------------------------------
 
@@ -623,10 +624,18 @@ local function onEnd(sender, stream, upTo)
 	end
 end
 
+-- Is `author` (a record's author) the same member as `sender`? On Forever a member can be written "Name-"
+-- (versions before 12.0.010) or "Name-Unknown" (since), so compare them without the empty or stand-in realm.
+local function sameMember(author, sender)
+	if author == sender then return true end
+	return dgks.UsesSurnames() and type(author) == "string" and type(sender) == "string"
+		and H.ShortName(author) == H.ShortName(sender)
+end
+
 local function onLiveRecord(sender, raw)
 	local rec = cleanRecord(raw)
 	-- Only the author may announce a new record
-	if not rec or rec.a ~= sender then return end
+	if not rec or not sameMember(rec.a, sender) then return end
 	if storeRecord(guildStore(true), rec) then H:NotifyChanged() end
 end
 
@@ -636,7 +645,8 @@ function dgks:OnHistoryComm(prefix, message, distribution, sender)
 	sender = H.FullName(sender)
 	if sender == myName then return end
 	local ok, op, gk, a, b, c, d = dgks:Deserialize(message)
-	if not ok or gk ~= guildKey then return end
+	-- On Forever a member on an older version still speaks with the old key ("Guild-"): hear them too
+	if not ok or (gk ~= guildKey and gk ~= legacyKey) then return end
 
 	if distribution == "GUILD" then
 		-- They just spoke in guild chat, so they are online whatever the roster last said
@@ -660,14 +670,15 @@ function H:UpdateIdentity()
 	end
 end
 
--- Before 12.0.010 a guild whose realm the game does not give (WoW Forever) was keyed "Guild-" (an empty
--- realm). Now that dgks.RealmName() falls back to "Unknown" it is keyed "Guild-Unknown", so the history saved
--- under the old key looked lost and its records stopped syncing. Merge the old store into the current one:
--- a stream that is not there yet is moved over, one that is gets the records it lacks and its head advanced.
--- It only adds records, and the old store is removed once everything is merged.
-local function mergeLegacyGuildStore(legacyKey)
+-- On Forever there is no realm, and the realm part of the guild key has changed with the version: "Guild-"
+-- before 12.0.010, "Guild-Unknown" since (dgks.RealmName() falls back to "Unknown"). Guild names are unique
+-- on Forever, so a store saved under any of those keys is the same guild. Merge each of them into the
+-- current one, so the history does not look reset after an update (or after the next change): a stream that
+-- is not there yet is moved over, one that is gets the records it lacks and its head advanced. It only adds
+-- records, and an old store is removed only once it has been merged.
+local function mergeGuildStore(oldKey)
 	local guilds = dgks.db.global.history.guilds
-	local old = guilds[legacyKey]
+	local old = guilds[oldKey]
 	if type(old) ~= "table" or type(old.streams) ~= "table" then return end
 	local store = guildStore(true)
 	if not store then return end
@@ -680,26 +691,44 @@ local function mergeLegacyGuildStore(legacyKey)
 			advanceHead(st)
 		end
 	end
-	guilds[legacyKey] = nil
+	guilds[oldKey] = nil
 	H.countCache = nil
+end
+
+local function mergeGuildStores(gname)
+	local guilds = dgks.db.global.history.guilds
+	local prefix, found = gname .. "-", {}
+	for key in pairs(guilds) do
+		-- "Guild-" plus a realm part with no hyphen of its own ("", "Unknown"): the same guild, another key
+		if type(key) == "string" and key ~= guildKey and key:sub(1, #prefix) == prefix
+			and not key:find("-", #prefix + 1, true) then
+			found[#found + 1] = key
+		end
+	end
+	for _, key in ipairs(found) do pcall(mergeGuildStore, key) end -- one damaged store must not stop the rest
 end
 
 function H:UpdateGuild()
 	local old = guildKey
-	guildKey = nil
-	local legacyKey -- the key this guild had before the realm fell back to "Unknown"
+	guildKey, legacyKey = nil, nil
+	local gname, fellBack
 	if IsInGuild() then
-		local gname, _, _, grealm = GetGuildInfo("player")
-		if usable(gname, "string") and gname ~= "" then
+		local gn, _, _, grealm = GetGuildInfo("player")
+		if usable(gn, "string") and gn ~= "" then
+			gname = gn
 			if not usable(grealm, "string") or grealm == "" then
 				grealm = myRealm
-				if dgks.UsesSurnames() then legacyKey = gname .. "-" end -- Forever only
+				fellBack = dgks.UsesSurnames() -- Forever: no realm, so the stand-in is used
 			end
 			guildKey = gname .. "-" .. grealm
 		end
 	end
-	-- A failure here must never stop the guild from being set up; the old store is only removed once merged
-	if guildKey and legacyKey and legacyKey ~= guildKey then pcall(mergeLegacyGuildStore, legacyKey) end
+	if guildKey and fellBack then
+		-- A member on an older version still speaks with the old key
+		if gname .. "-" ~= guildKey then legacyKey = gname .. "-" end
+		-- A failure here must never stop the guild from being set up
+		pcall(mergeGuildStores, gname)
+	end
 	if guildKey ~= old then
 		wipe(pending)
 		nextSummaryAt = now() + SUMMARY_FIRST_DELAY
