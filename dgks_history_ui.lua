@@ -103,8 +103,8 @@ end
 -- For guild views: whose record this is and what it counts as. A team kill (X) counts as a kill
 -- by the member who landed it, not by whoever saw it.
 local function memberOf(rec)
-	if rec.k == "X" then return H.ShortName(rec.kn), rec.kc, "K" end
-	return H.ShortName(rec.a), rec.c, rec.k
+	if rec.k == "X" then return H.CanonicalMember(H.ShortName(rec.kn)), rec.kc, "K" end
+	return H.CanonicalMember(H.ShortName(rec.a)), rec.c, rec.k
 end
 
 local function recordTip(rec)
