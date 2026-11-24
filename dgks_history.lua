@@ -222,6 +222,7 @@ local FIELDS = {
 	kn = { "string", 64 }, -- team kill (X): the killer, "Name-Realm"
 	kc = { "string", 20 }, -- team kill: killer class file
 	ks = { "number", { 1, 100000 } }, -- team kill: killer spec ID
+	kl = { "number", { -1, 1000 } }, -- team kill: killer level
 }
 local REQUIRED = { a = true, e = true, s = true, t = true, k = true, o = true }
 
@@ -356,6 +357,28 @@ end
 
 -- Recording -------------------------------------------------------------------------------------
 
+-- Units that can show another player's level right now
+local LEVEL_UNITS = { "target", "focus", "mouseover" }
+for i = 1, 5 do LEVEL_UNITS[#LEVEL_UNITS + 1] = "arena" .. i end
+for i = 1, 4 do LEVEL_UNITS[#LEVEL_UNITS + 1] = "party" .. i end
+for i = 1, 40 do LEVEL_UNITS[#LEVEL_UNITS + 1] = "raid" .. i end
+for i = 1, 40 do LEVEL_UNITS[#LEVEL_UNITS + 1] = "nameplate" .. i end
+
+-- The level of the player with this GUID, read from a unit we can see, or nil. -1 means the game
+-- shows "??" (far above our level).
+local function liveLevel(guid)
+	if not usable(guid, "string") then return nil end
+	for _, unit in ipairs(LEVEL_UNITS) do
+		local ok, g = pcall(UnitGUID, unit)
+		if ok and usable(g, "string") and g == guid then
+			local ok2, level = pcall(UnitLevel, unit)
+			if ok2 and usable(level, "number") and level ~= 0 then return level end
+			return nil
+		end
+	end
+	return nil
+end
+
 -- Details about a player we can read from their GUID
 local function opponentInfo(rec, guid)
 	-- The player cache (dgks_players.lua) knows players we have seen: the Death Recap only gives a
@@ -379,11 +402,9 @@ local function opponentInfo(rec, guid)
 	if name and not rec.o:find("-", 1, true) then
 		rec.o = name .. "-" .. (realm or myRealm)
 	end
-	local tguid = UnitGUID("target")
-	if usable(tguid, "string") and tguid == guid then
-		local level = UnitLevel("target")
-		if usable(level, "number") then rec.ol = level end
-	end
+	-- A level read now beats the one the player cache noted earlier
+	local level = liveLevel(guid)
+	if level then rec.ol = level end
 end
 
 -- Killer names written by older versions when the killer was not known
@@ -425,7 +446,12 @@ function H:RecordTeamKill(killerGUID, victimGUID)
 	local victimName = info(victimGUID)
 	if not killerName or not victimName then return end
 	local spec = dgks.Players and dgks.Players:SpecFor(killerGUID)
-	return H:Record("X", victimName, victimGUID, nil, nil, { killer = { name = killerName, class = killerClass, spec = spec } })
+	local level = liveLevel(killerGUID)
+	if not level and dgks.Players then
+		local seen = dgks.Players:Lookup(nil, killerGUID)
+		level = seen and seen.level
+	end
+	return H:Record("X", victimName, victimGUID, nil, nil, { killer = { name = killerName, class = killerClass, spec = spec, level = level } })
 end
 
 function H:RecordUnsafe(kind, opponent, guid, streak, multikill, flags)
@@ -460,6 +486,7 @@ function H:RecordUnsafe(kind, opponent, guid, streak, multikill, flags)
 		rec.kn = killer.name:sub(1, 64)
 		if usable(killer.class, "string") then rec.kc = killer.class end
 		if usable(killer.spec, "number") then rec.ks = killer.spec end
+		if usable(killer.level, "number") and killer.level ~= 0 then rec.kl = killer.level end
 	end
 	if flags and type(flags.guessed) == "number" then
 		rec.g = 1

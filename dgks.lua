@@ -1948,7 +1948,7 @@ function dgks:dgks_SoundPack(sound)
 	-- FIXME	
 	if not sound then sound = 1 end
     local soundfile = self.db.profile.soundpath .. sound
-    dgks:SoundEventHandler(info, soundfile)
+    dgks:SoundEventHandler(nil, soundfile)
 end
 
 function dgks:getSoundPack()
@@ -2150,9 +2150,9 @@ function dgks:Test()
 	-- 7/21 01:23:16.879  PARTY_KILL,Player-9-00064F35,"Ratchet-Kil'jaeden",0x511,0x0,Player-3676-09BED6E0,"Kruulmokthan-Area52",0x10548,0x0
 	-- 7/21 01:23:16.879  SPELL_DAMAGE,Player-9-00064F35,"Ratchet-Kil'jaeden",0x511,0x0,Player-3676-09BED6E0,"Kruulmokthan-Area52",0x10548,0x0,585,"Smite",0x2,0000000000000000,0000000000000000,0,0,0,0,0,-1,0,0,0,0.00,0.00,628,0.0000,0,930,969,249,2,0,0,0,nil,nil,nil
     -- 7/21 01:23:16.879  UNIT_DIED,0000000000000000,nil,0x80000000,0x80000000,Player-3676-09BED6E0,"Kruulmokthan-Area52",0x10548,0x0
-	self:CombatLogEventHandler(info,GetTime(),"PARTY_KILL",false,"Player-9-00064F35","Ratchet-Kil'jaeden",0x511,0x0,"Player-3676-09BED6E0","Test-Victim",0x10548,0x0)
-	self:CombatLogEventHandler(info,GetTime(),"SPELL_DAMAGE",false,"Player-9-00064F35","Ratchet-Kil'jaeden",0x511,0x0,"Player-3676-09BED6E0","Test-Victim",0x10548,0x0,585,"Smite",0x2,0000000000000000,0000000000000000,0,0,0,0,0,-1,0,0,0,0.00,0.00,628,0.0000,0,930,969,249,2,0,0,0,nil,nil,nil)
-	self:CombatLogEventHandler(info,GetTime(),"UNIT_DIED",false,0000000000000000,nil,0x80000000,0x80000000,"Player-3676-09BED6E0","Test-Victim",0x10548,0x0)
+	self:CombatLogEventHandler(nil,GetTime(),"PARTY_KILL",false,"Player-9-00064F35","Ratchet-Kil'jaeden",0x511,0x0,"Player-3676-09BED6E0","Test-Victim",0x10548,0x0)
+	self:CombatLogEventHandler(nil,GetTime(),"SPELL_DAMAGE",false,"Player-9-00064F35","Ratchet-Kil'jaeden",0x511,0x0,"Player-3676-09BED6E0","Test-Victim",0x10548,0x0,585,"Smite",0x2,0000000000000000,0000000000000000,0,0,0,0,0,-1,0,0,0,0.00,0.00,628,0.0000,0,930,969,249,2,0,0,0,nil,nil,nil)
+	self:CombatLogEventHandler(nil,GetTime(),"UNIT_DIED",false,0000000000000000,nil,0x80000000,0x80000000,"Player-3676-09BED6E0","Test-Victim",0x10548,0x0)
 end
 
 function dgks:TestPlayerDeath()
@@ -2162,8 +2162,8 @@ function dgks:TestPlayerDeath()
 	-- 07202018 7/21 00:34:33.944  SPELL_PERIODIC_DAMAGE,Player-11-0A947E83,"Invictusgg-Tichondrius",0x548,0x0,Player-9-00064F35,"Ratchet-Kil'jaeden",0x511,0x0,198097,"Creeping Venom",0x8,0000000000000000,0000000000000000,0,0,0,0,0,-1,0,0,0,0.00,0.00,92,0.0000,0,116,134,97,8,0,0,0,nil,nil,nil
 	-- 07202018 7/21 00:34:33.944  UNIT_DIED,0000000000000000,nil,0x80000000,0x80000000,Player-9-00064F35,"Ratchet-Kil'jaeden",0x511,0x0
 	self:Print("DEBUG: " .. "Sending Player Death Event...")
-	self:CombatLogEventHandler(info,GetTime(),"RANGE_DAMAGE",false,0x030000000086920F,"KillerName",0x548,0x0,UnitGUID("Player"),playerName,0x511,50622,"Auto Shot",0x1,10990,-1,1,0,0,0,nil,nil,nil)
-	self:CombatLogEventHandler(info,GetTime(),"UNIT_DIED",false,0x0000000000000000,nil,0x80000000,0x80000000,UnitGUID("Player"),playerName,0x511,0x0)
+	self:CombatLogEventHandler(nil,GetTime(),"RANGE_DAMAGE",false,0x030000000086920F,"KillerName",0x548,0x0,UnitGUID("Player"),playerName,0x511,50622,"Auto Shot",0x1,10990,-1,1,0,0,0,nil,nil,nil)
+	self:CombatLogEventHandler(nil,GetTime(),"UNIT_DIED",false,0x0000000000000000,nil,0x80000000,0x80000000,UnitGUID("Player"),playerName,0x511,0x0)
 end
 --@end-debug@
 
