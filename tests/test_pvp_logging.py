@@ -91,6 +91,35 @@ check("NPC kill, NPC killshots on but PvE logging off: announced, not logged",
 check("NPC kill, both on: announced and logged",
       kill("Creature-0-1-2-3-4-5", "dgks.db.profile.historyPve = true; NOW = NOW + 5") == (["Kobold Miner"], ["Kobold Miner"]))
 
+
+# ---------- Pet kills count for their owner ----------
+def pet_kill(attacker, target, setup_code=""):
+    L.execute("RECORDS, TX = {}, {}; NOW = NOW + 5; dgks.db.profile.historyPve = nil; dgks.db.profile.dopve = nil")
+    L.execute(setup_code)
+    L.execute(f"FIRE('PARTY_KILL', '{attacker}', '{target}')")
+    return [r["o"] for r in L.eval("RECORDS").values()], list(L.eval("TX").values())
+
+
+L.execute("UNITS = { pet = { guid = 'Pet-0-1-2-3-WOLF' } }")
+check("our pet's killing blow on a player: announced and logged as our kill",
+      pet_kill("Pet-0-1-2-3-WOLF", "Player-2-ZED") == (["Zed"], ["Zed"]), pet_kill("Pet-0-1-2-3-WOLF", "Player-2-ZED"))
+check("our pet's NPC kill, PvE logging on: logged quietly",
+      pet_kill("Pet-0-1-2-3-WOLF", "Creature-0-1-2-3-4-5", "dgks.db.profile.historyPve = true") == (["Kobold Miner"], []))
+check("someone else's pet: not our kill", pet_kill("Pet-0-9-9-9-CAT", "Player-2-ZED") == ([], []))
+L.execute("UNITS = {}")
+check("no pet out: a pet GUID is not ours", pet_kill("Pet-0-1-2-3-WOLF", "Player-2-ZED") == ([], []))
+L.execute("UNITS = { pet = { guid = SECRET } }")
+check("pet GUID hidden by the game: not matched", pet_kill("Pet-0-1-2-3-WOLF", "Player-2-ZED") == ([], []))
+L.execute("UNITS = {}")
+
+# The same death reported twice (PARTY_KILL and UNIT_DIED on classic) is one kill; a later death is another
+L.execute("RECORDS, TX = {}, {}; NOW = NOW + 5")
+L.execute("FIRE('PARTY_KILL', 'Player-1-ME', 'Player-2-ZED'); NOW = NOW + 0.01; FIRE('PARTY_KILL', 'Player-1-ME', 'Player-2-ZED')")
+recs = lambda: [r["o"] for r in L.eval("RECORDS").values()]
+check("same victim twice within 2 seconds: one kill", recs() == ["Zed"], recs())
+L.execute("NOW = NOW + 30; FIRE('PARTY_KILL', 'Player-1-ME', 'Player-2-ZED')")
+check("same victim again later: a second kill", recs() == ["Zed", "Zed"], recs())
+
 # ---------- Classic: the combat log says whether the killer was player-controlled ----------
 C = lua51.LuaRuntime(unpack_returned_tuples=True)
 classic_src = death_src.replace("WOW_PROJECT_ID = 1\n", "WOW_PROJECT_ID = 2\n")
@@ -123,5 +152,26 @@ check("Classic: killed by a player: logged", classic_death("Zed", 0x548) == ["Ze
 check("Classic: killed by a player's pet: logged", classic_death("Wolf", 0x1148) == ["Wolf"])
 check("Classic: killed by an NPC: not logged", classic_death("Kobold Miner", 0xa48) == [])
 check("Classic: killed by an NPC, PvE logging on: logged", classic_death("Kobold Miner", 0xa48, "dgks.db.profile.historyPve = true") == ["Kobold Miner"])
+
+
+# Classic kills by our pet: the combat log marks it as ours (affiliation "mine", 0x1). PARTY_KILL and
+# the pet-credited UNIT_DIED both report the death; it must count once.
+def classic_pet_kill(src_guid, src_flags, with_damage=True, setup_code=""):
+    C.execute("RECORDS = {}; NOW = (NOW or 0) + 30; dgks.db.profile.historyPve = nil; dgks.db.profile.dopve = nil")
+    C.execute(setup_code)
+    if with_damage:
+        C.execute(f"dgks:CombatLogEventHandler(nil, 1, 'SWING_DAMAGE', false, '{src_guid}', 'Wolf', {src_flags}, 0, 'Player-2-ZED', 'Zed', 0x548, 0, 100)")
+    C.execute(f"dgks:CombatLogEventHandler(nil, 1.001, 'PARTY_KILL', false, '{src_guid}', 'Wolf', {src_flags}, 0, 'Player-2-ZED', 'Zed', 0x548, 0)")
+    C.execute("dgks:CombatLogEventHandler(nil, 1.004, 'UNIT_DIED', false, '', nil, 0, 0, 'Player-2-ZED', 'Zed', 0x548, 0)")
+    return [r["o"] for r in C.eval("RECORDS").values()]
+
+
+C.execute("function dgks:ProcessKillshot() end function dgks:SendCM() end function dgks:Serialize() return 'x' end dgks.db.profile.kstextM = { 'a', 'b', 'c' }")
+r = classic_pet_kill("Pet-0-1-WOLF", 0x1111)
+check("Classic: our pet's kill reported by PARTY_KILL and UNIT_DIED: one kill", r == ["Zed"], r)
+r = classic_pet_kill("Pet-0-1-WOLF", 0x1111, with_damage=False)
+check("Classic: our pet's PARTY_KILL alone counts", r == ["Zed"], r)
+r = classic_pet_kill("Pet-0-9-CAT", 0x1114)  # their pet also dealt the last damage
+check("Classic: an outsider's pet: not our kill", r == [], r)
 print("FAILS:", fails)
 sys.exit(1 if fails else 0)

@@ -16,7 +16,7 @@ local lastrxtimestamp = 0
 local lastkill = 0
 local timestamp = 0
 local lastToHurtMe = ""
-local lastLocalKillKey -- "victimGUID@timestamp" of the last kill we processed locally
+local lastLocalKillKey -- { guid = victim GUID, t = GetTime() } of the last kill we processed locally
 local newestconfigversion = 1
 local frame, events = CreateFrame("Frame"), {}; -- Event Frame
 local damageDealers = {}
@@ -64,10 +64,38 @@ local function isGroupMember(guid)
 	return false
 end
 
+-- The GUID of the player who owns this pet: our pet ("pet") or a party or raid member's pet
+-- ("partypetN", "raidpetN"). nil when the GUID is not a pet we can see. Guardians and totems have
+-- no unit token, so they cannot be traced to an owner this way.
+local function petOwner(guid)
+	if type(guid) ~= "string" or isSecret(guid) then return nil end
+	local function is(unit)
+		local g = UnitGUID(unit)
+		return g ~= nil and not isSecret(g) and g == guid
+	end
+	local function owner(unit)
+		local g = UnitGUID(unit)
+		if g ~= nil and not isSecret(g) then return g end
+	end
+	if is("pet") then return owner("player") end
+	if IsInRaid and IsInRaid() then
+		for i = 1, 40 do
+			if is("raidpet" .. i) then return owner("raid" .. i) end
+		end
+	else
+		for i = 1, 4 do
+			if is("partypet" .. i) then return owner("party" .. i) end
+		end
+	end
+	return nil
+end
+
 dgks = LibStub("AceAddon-3.0"):NewAddon("dgks", "AceEvent-3.0", "AceConsole-3.0", "LibSink-2.0","AceComm-3.0","AceSerializer-3.0")
 
 -- Shown in the dG KillShot window
 dgks.version = version
+
+dgks.PetOwner = petOwner
 
 -- Forever: characters have a first name and a surname, and names are unique across the region.
 -- The name functions (UnitName, UnitFullName, GetPlayerInfoByGUID, UnitNameFromGUID) hand the
@@ -1254,10 +1282,17 @@ function dgks:CombatLogEventHandler(info, timestamp, event, hideCaster, sourceGU
 	-- Remove Party Kill to test damageDealers table This maybe required to detect Feign Death
 	if event == "PARTY_KILL" then
 		if (destFlags == nil) then return end
+		-- A killing blow by something we control (our pet, a guardian, a totem) is our kill; a group
+		-- member's pet counts for that member. The UNIT_DIED branch below can report the same death
+		-- again; KillshotTX drops the repeat.
+		local mine = sourceGUID == UnitGUID("player")
+			or (sourceGUID ~= nil and petOwner(sourceGUID) == UnitGUID("player"))
+			or (sourceFlags ~= nil and bit.band(sourceFlags, COMBATLOG_OBJECT_AFFILIATION_MINE) > 0)
+		local killerGUID = petOwner(sourceGUID) or sourceGUID
 		if (bit.band(destFlags, COMBATLOG_OBJECT_TYPE_PLAYER) == COMBATLOG_OBJECT_TYPE_PLAYER) or dgks.db.profile.dopve then
 			-- A unit has died to someone in our party
-				
-			if sourceGUID == UnitGUID("player") then
+
+			if mine then
 							
 				--@debug@
 				-- Dev Debugging functions
@@ -1268,11 +1303,11 @@ function dgks:CombatLogEventHandler(info, timestamp, event, hideCaster, sourceGU
 				-- The player has landed a killshot
 				self:KillshotTX(destName, timestamp, destGUID)
 			elseif bit.band(destFlags, COMBATLOG_OBJECT_TYPE_PLAYER) == COMBATLOG_OBJECT_TYPE_PLAYER
-				and isGroupMember(sourceGUID) and not isGroupMember(destGUID) then
-				-- A party or raid member landed the killing blow on another player: a team kill
-				dgks.History:RecordTeamKill(sourceGUID, destGUID)
+				and isGroupMember(killerGUID) and not isGroupMember(destGUID) then
+				-- A party or raid member (or their pet) landed the killing blow on another player: a team kill
+				dgks.History:RecordTeamKill(killerGUID, destGUID)
 			end
-		elseif sourceGUID == UnitGUID("player") then
+		elseif mine then
 			-- Our kill of an NPC, with NPC killshots off: history only, when PvE logging is on
 			recordPvEKill(destName, destGUID)
 		end
@@ -1348,13 +1383,14 @@ function dgks:CombatLogEventHandler(info, timestamp, event, hideCaster, sourceGU
 end
 
 function dgks:KillshotTX(txvictim,txtimestamp,txvictimGUID)
-	-- One death is one kill. If the same death is reported twice with the same victim and timestamp
-	-- (the combat-log path can do that through PARTY_KILL and the pet-credited UNIT_DIED branch), drop
-	-- the repeat. This used to be caught by the duplicate check on our own broadcast coming back.
+	-- One death is one kill. The combat-log path can report the same death twice: PARTY_KILL and the
+	-- pet-credited UNIT_DIED branch, a few milliseconds apart. Drop a kill of the same victim within
+	-- 2 seconds of the last one (nobody dies twice that fast). This used to be caught by the duplicate
+	-- check on our own broadcast coming back.
 	if txvictimGUID ~= nil and not isSecret(txvictimGUID) then
-		local key = tostring(txvictimGUID) .. "@" .. tostring(txtimestamp)
-		if key == lastLocalKillKey then return end
-		lastLocalKillKey = key
+		local t = GetTime()
+		if lastLocalKillKey and lastLocalKillKey.guid == txvictimGUID and t - lastLocalKillKey.t < 2 then return end
+		lastLocalKillKey = { guid = txvictimGUID, t = t }
 	end
 	-- Process the detect killshot
 	-- Increment killshot streak 
@@ -2152,6 +2188,8 @@ if classic then
 		-- In restricted content the GUIDs arrive as secret values, which addon code cannot compare or inspect.
 		-- This guard must stay outside the debug block below, which is stripped from release builds.
 		if isSecret(attackerGUID) or isSecret(targetGUID) then return end
+		-- A killing blow by a pet counts for its owner: ours as our kill, a group member's as their team kill
+		attackerGUID = petOwner(attackerGUID) or attackerGUID
 		--@debug@
 			if isSecret(attackerGUID) then attackerGUID = "Attacker-SECRET" end
 			if isSecret(targetGUID) then targetGUID = "Target-SECRET" end
