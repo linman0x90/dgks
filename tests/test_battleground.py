@@ -37,6 +37,18 @@ team = list(L.eval("TEAM").values())
 check("raid member's kill on an enemy player becomes a team kill; NPCs, strangers, own group and secrets ignored",
       team == ["Player-1-BOB>Player-2-ZED"], team)
 
+# A raid member's pet landing the killing blow counts as that member's team kill
+L.execute("TEAM = {}; UNITS.raidpet3 = { guid = 'Pet-0-1-BOBWOLF' }")
+L.execute("FIRE('PARTY_KILL', 'Pet-0-1-BOBWOLF', 'Player-2-ZED')")
+L.execute("FIRE('PARTY_KILL', 'Pet-0-9-STRAYCAT', 'Player-2-ZED')")  # a pet outside the raid
+team = list(L.eval("TEAM").values())
+check("raid member's pet's kill is credited to the member; other pets ignored", team == ["Player-1-BOB>Player-2-ZED"], team)
+L.execute("TEAM = {}; IsInRaid = function() return false end; UNITS = { party2 = { guid = 'Player-1-DAN' }, partypet2 = { guid = 'Pet-0-1-DANIMP' } }")
+L.execute("FIRE('PARTY_KILL', 'Pet-0-1-DANIMP', 'Player-2-ZED')")
+team = list(L.eval("TEAM").values())
+check("party member's pet's kill is credited to the member", team == ["Player-1-DAN>Player-2-ZED"], team)
+L.execute("IsInRaid = function() return true end; UNITS = { raid3 = { guid = 'Player-1-BOB' }, raid7 = { guid = 'Player-1-CARA' } }")
+
 # ---------- Part 2: history ----------
 sim_code = open(HERE + "/test_sync.py").read()
 exec(sim_code.split("clock = Clock()")[0])  # Client, Network, Clock, STUBS, POST
