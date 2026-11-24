@@ -137,18 +137,58 @@ check("unknown killer: no lookup", rec4["oc"] is None)
 L.execute("ROWS = dgks.History:ViewRows('mine')")
 rows = [[strip(c) for c in r["cells"].values()] for r in L.eval("ROWS").values()]
 print("  my history:", rows[0])
-check("My history shows spec + class and location", rows[0][3] == "Fire Mage" and rows[0][4] == "Refuge Pointe, Arathi Highlands")
+check("My history shows the opponent's level, spec + class and location", rows[0][3] == "80" and rows[0][4] == "Fire Mage" and rows[0][5] == "Refuge Pointe, Arathi Highlands")
 tip = []
 L.execute("TTL = {}")
 tt = L.eval('{ AddLine = function(_, t) TTL[#TTL+1] = t end, AddDoubleLine = function(_, l, r) TTL[#TTL+1] = l .. ": " .. r end }')
 list(L.eval("ROWS").values())[0]["tip"](tt)
 lines = [strip(x) for x in L.eval("TTL").values()]
 print("  tooltip:", lines)
-check("tooltip: opponent level/race/spec/class, you with spec, location",
-      "Opponent: Level 80 Undead Fire Mage" in lines and "Player: Alice, Level 80 Holy Paladin" in lines and "Location: Refuge Pointe, Arathi Highlands" in lines)
+check("tooltip: killer level/race/spec/class, you with spec, location",
+      "Killer: Level 80 Undead Fire Mage" in lines and "Player: Alice, Level 80 Holy Paladin" in lines and "Location: Refuge Pointe, Arathi Highlands" in lines)
 L.execute("ROWS = dgks.History:ViewRows('opponents')")
 rows = [[strip(c) for c in r["cells"].values()] for r in L.eval("ROWS").values()]
 check("My opponents shows spec + class", ["Zed-Other", "Fire Mage"] == rows[[r[0] for r in rows].index("Zed-Other")][:2], rows)
+
+# 7. Levels of the killer and the victim
+def tooltip_of(index=0):
+    L.execute("TTL = {}")
+    tt = L.eval('{ AddLine = function(_, t) TTL[#TTL+1] = t end, AddDoubleLine = function(_, l, r) TTL[#TTL+1] = l .. ": " .. r end }')
+    list(L.eval("ROWS").values())[index]["tip"](tt)
+    return [strip(x) for x in L.eval("TTL").values()]
+
+L.execute("""dgks.db.char.history.records = {}; dgks.db.profile.recordTeamKills = true
+UNITS = { nameplate5 = { player = true, enemy = true, guid = 'Player-2-ZED', name = 'Zed', realm = 'Other', class = 'MAGE', race = 'Scourge', level = 78 } }""")
+rec = L.eval("dgks.History:Record('K', 'Zed-Other', 'Player-2-ZED', 1, 0)")
+check("victim's level read live from a nameplate (beats the cached 80)", rec["ol"] == 78, rec["ol"])
+L.execute("UNITS.nameplate5.level = -1")
+rec = L.eval("dgks.History:Record('K', 'Zed-Other', 'Player-2-ZED', 2, 0)")
+check("a victim shown as ?? is stored as -1", rec["ol"] == -1, rec["ol"])
+L.execute("dgks.db.char.history.records = { dgks.db.char.history.records[2] }; ROWS = dgks.History:ViewRows('mine')")
+row = [strip(c) for c in list(L.eval("ROWS").values())[0]["cells"].values()]
+check("Level column shows ?? for -1", row[3] == "??", row)
+check("kill tooltip names the victim with level", "Victim: Level ?? Undead Fire Mage" in tooltip_of(), tooltip_of())
+
+# Team kill: the killer is a raid member we can see
+L.execute("""dgks.db.char.history.records = {}
+UNITS.nameplate5.level = 79
+UNITS.raid3 = { player = true, guid = 'Player-1-BOB', name = 'Bob', realm = 'Realm', class = 'ROGUE', level = 70 }""")
+rec = L.eval("dgks.History:RecordTeamKill('Player-1-BOB', 'Player-2-ZED')")
+check("team kill stores the killer's and the victim's level", (rec["kl"], rec["ol"]) == (70, 79), (rec["kl"], rec["ol"]))
+L.execute("ROWS = dgks.History:ViewRows('mine')")
+lines = tooltip_of()
+check("team kill tooltip: victim and killing blow with levels",
+      "Victim: Level 79 Undead Fire Mage" in lines and "Killing blow: Bob, Level 70 Rogue" in lines, lines)
+
+# Killer no longer visible: the level comes from the player cache
+L.execute("""UNITS.mouseover = { player = true, guid = 'Player-1-CARA', name = 'Cara', realm = 'Realm', class = 'MAGE', race = 'Gnome', level = 75 }
+FIRE('UPDATE_MOUSEOVER_UNIT')
+UNITS.elsewhere = UNITS.mouseover; UNITS.mouseover = nil""")
+rec = L.eval("dgks.History:RecordTeamKill('Player-1-CARA', 'Player-2-ZED')")
+check("killer out of sight: level from the player cache", rec["kl"] == 75, rec["kl"])
+L.execute("UNITS.elsewhere2 = { player = true, guid = 'Player-1-NEW', name = 'Newt', realm = 'Realm', class = 'MAGE' }")
+rec = L.eval("dgks.History:RecordTeamKill('Player-1-NEW', 'Player-2-ZED')")
+check("killer never seen: no level", rec["kl"] is None and rec["kn"] == "Newt-Realm", rec["kl"])
 
 print("FAILS:", fails)
 sys.exit(1 if fails else 0)
