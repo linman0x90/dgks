@@ -47,7 +47,8 @@ local pending = {}        -- [stream] = { peer = name, at = time } requests we a
 local roster = {}         -- [Name-Realm] = { online = bool, target = name as the roster spells it }
 local rosterAt = 0        -- when we last asked the server for the roster
 local whispered = {}      -- [lowercased name] = time of our last addon whisper to it
-local memberCache = {}    -- [name] = canonical member name, see H.CanonicalMember
+local memberCache = {}    -- [name|class] = canonical member name, see H.CanonicalMember
+local storeNames = {}     -- [full name] = class file or false: members named in the guild store
 local nextSummaryAt = 0
 local myName, myRealm, guildKey
 local legacyKey -- Forever: the key this guild had before the realm fell back to "Unknown" ("Guild-"); still heard
@@ -311,6 +312,7 @@ function H:GuildRecords()
 	local store = guildStore(false)
 	if not store then return list end
 	local ownKills = {} -- [killerKey|victimKey] = { times }
+	H.NoteStoreNames(store)
 	for _, st in pairs(store.streams) do
 		for _, rec in pairs(st.r) do
 			if rec.k == "X" then
@@ -318,7 +320,7 @@ function H:GuildRecords()
 			else
 				list[#list + 1] = rec
 				if rec.k == "K" then
-					local key = (H.PlayerKey(H.CanonicalMember(rec.a)) or "?") .. "|" .. (H.OpponentKey(rec) or "?")
+					local key = (H.PlayerKey(H.CanonicalMember(rec.a, rec.c)) or "?") .. "|" .. (H.OpponentKey(rec) or "?")
 					ownKills[key] = ownKills[key] or {}
 					table.insert(ownKills[key], rec.t)
 				end
@@ -337,7 +339,7 @@ function H:GuildRecords()
 	for _, rec in ipairs(teamKills) do
 		-- The killer's own record may name them by first name only ("Pink") while the witness wrote the full
 		-- name ("Pink Tonic"): compare them as the same member, or the kill is listed twice
-		local key = (H.PlayerKey(H.CanonicalMember(rec.kn), rec.a and rec.a:match("%-(.+)$")) or "?") .. "|" .. (H.OpponentKey(rec) or "?")
+		local key = (H.PlayerKey(H.CanonicalMember(rec.kn, rec.kc), rec.a and rec.a:match("%-(.+)$")) or "?") .. "|" .. (H.OpponentKey(rec) or "?")
 		if not near(ownKills[key], rec.t) and not near(seen[key], rec.t) then
 			seen[key] = seen[key] or {}
 			table.insert(seen[key], rec.t)
@@ -658,8 +660,10 @@ end
 -- themselves "Name-" (an empty realm) where the sender is "Name-Unknown": accept exactly that spelling too.
 local function sameMember(author, sender)
 	if author == sender then return true end
-	return dgks.UsesSurnames() and type(author) == "string" and type(sender) == "string"
-		and author == H.ShortName(sender) .. "-"
+	if not (dgks.UsesSurnames() and type(author) == "string" and type(sender) == "string") then return false end
+	-- The sender's name without its realm part (not H.ShortName: that needs our own realm to be known)
+	local base = sender:match("^(.-)%-[^%-]*$") or sender
+	return author == base .. "-"
 end
 
 local function onLiveRecord(sender, raw)
@@ -672,6 +676,9 @@ end
 function dgks:OnHistoryComm(prefix, message, distribution, sender)
 	if prefix ~= PREFIX or not guildKey or not dgks.db.profile.historyShare then return end
 	if isSecret(message) or isSecret(sender) or type(sender) ~= "string" then return end
+	-- Without our own name we can't tell our messages from anyone else's
+	if not myName then H:UpdateIdentity() end
+	if not myName then return end
 	sender = H.FullName(sender)
 	if sender == myName then return end
 	local ok, op, gk, a, b, c, d = dgks:Deserialize(message)
@@ -709,25 +716,29 @@ end
 -- on Forever, so a store saved under any of those keys is the same guild. Merge each of them into the
 -- current one, so the history does not look reset after an update (or after the next change): a stream that
 -- is not there yet is moved over, one that is gets the records it lacks and its head advanced. It only adds
--- records, and an old store is removed only once it has been merged.
+-- records. A record that is not valid is left where it was, so nothing is lost; the old store is removed
+-- only once nothing is left in it.
 local function mergeGuildStore(oldKey)
 	local guilds = dgks.db.global.history.guilds
 	local old = guilds[oldKey]
 	if type(old) ~= "table" or type(old.streams) ~= "table" then return end
 	local store = guildStore(true)
 	if not store then return end
+	local limit = cutoff()
 	for key, ost in pairs(old.streams) do
 		if type(key) == "string" and type(ost) == "table" and type(ost.r) == "table" then
 			local st = getStream(store, key)
 			local top = 0
 			for seq, rec in pairs(ost.r) do
 				-- Only what a received record would have to be: a whole sequence number and a valid record
-				if type(seq) == "number" and seq >= 1 and seq == math.floor(seq) then
-					local clean = cleanRecord(rec)
-					if clean then
+				local clean = type(seq) == "number" and seq >= 1 and seq == math.floor(seq) and cleanRecord(rec)
+				if clean then
+					-- Past the retention period it would be pruned anyway
+					if clean.t >= limit then
 						if st.r[seq] == nil then st.r[seq] = clean end
 						if seq > top then top = seq end
 					end
+					ost.r[seq] = nil
 				end
 			end
 			-- The old head may sit past records that expired (and were pruned), so the records alone would
@@ -737,9 +748,11 @@ local function mergeGuildStore(oldKey)
 				st.h = math.max(st.h, math.min(ost.h, top))
 			end
 			advanceHead(st)
+			if next(st.r) == nil and st.h == 0 then store.streams[key] = nil end
+			if next(ost.r) == nil then old.streams[key] = nil end
 		end
 	end
-	guilds[oldKey] = nil
+	if next(old.streams) == nil then guilds[oldKey] = nil end
 	H.countCache = nil
 end
 
@@ -755,6 +768,7 @@ local function mergeGuildStores(gname)
 end
 
 function H:UpdateGuild()
+	if not myName then H:UpdateIdentity() end -- the name may not have been ready at login
 	local old = guildKey
 	guildKey, legacyKey = nil, nil
 	local gname, fellBack
@@ -777,6 +791,8 @@ function H:UpdateGuild()
 	end
 	if guildKey ~= old then
 		wipe(pending)
+		wipe(storeNames)
+		wipe(memberCache)
 		nextSummaryAt = now() + SUMMARY_FIRST_DELAY
 		H:NotifyChanged()
 	end
@@ -786,52 +802,90 @@ end
 -- versions before 12.0.009 recorded some names as the first name only ("Pink" for "Pink Tonic"), and
 -- team kills are credited to the killer's name as the witnessing client wrote it, so one member could
 -- appear twice in the guild tables and a kill be listed twice. A name without a surname that is the start
--- of exactly one guild member's full name ("Pink " + "Tonic") is that member. Nothing stored is changed:
--- this only decides which row a record is counted under. A name is left alone when it is already a full
--- name, when it is a real one-word member, when two members could match, or when there is no roster yet.
--- Forever only. Our own realm and a bare "-" are dropped first, like H.ShortName does, so "Pink-Unknown"
--- (a name saved with this client's stand-in realm) is "Pink".
-function H.CanonicalMember(name)
+-- of exactly one known member's full name ("Pink " + "Tonic") is that member. Known members are the guild
+-- roster and the full names the guild store itself names (authors and team-kill killers), so a member who
+-- has left still matches their own old records. When the record's class is known, a member of another
+-- class doesn't match. Nothing stored is changed: this only decides which row a record is counted under.
+-- A name is left alone when it is already a full name, when it is a real one-word member, when two members
+-- could match, or when nothing matches. Forever only. Our own realm and a bare "-" are dropped first, like
+-- H.ShortName does, so "Pink-Unknown" (a name saved with this client's stand-in realm) is "Pink".
+local function separator()
+	return dgks.SurnameSeparator and dgks.SurnameSeparator() or " "
+end
+
+-- Note the full names (with a surname) that the guild store names, and their class
+function H.NoteStoreNames(store)
+	if not dgks.UsesSurnames() then return end
+	local sep, added = separator(), false
+	local function note(name, class)
+		if type(name) ~= "string" then return end
+		name = H.ShortName(name)
+		if name:find("-", 1, true) or not name:find(sep, 1, true) then return end
+		local known = storeNames[name]
+		if known == nil or (known == false and class) then
+			storeNames[name] = class or false
+			added = true
+		end
+	end
+	for _, st in pairs(store.streams) do
+		for _, rec in pairs(st.r) do
+			note(rec.a, rec.c)
+			if rec.k == "X" then note(rec.kn, rec.kc) end
+		end
+	end
+	if added then wipe(memberCache) end
+end
+
+function H.CanonicalMember(name, class)
 	if type(name) ~= "string" or name == "" then return name end
 	if not dgks.UsesSurnames() then return name end
 	name = H.ShortName(name)
-	local cached = memberCache[name]
+	if type(class) ~= "string" then class = nil end
+	local cacheKey = name .. "|" .. (class or "")
+	local cached = memberCache[cacheKey]
 	if cached ~= nil then return cached end
 	local result = name
-	if not name:find(" ", 1, true) and not name:find("-", 1, true) then
-		local prefix = name .. " "
+	local sep = separator()
+	if not name:find(sep, 1, true) and not name:find("-", 1, true) then
+		local prefix = name .. sep
 		local found, ambiguous, isMemberName = nil, false, false
-		for full in pairs(roster) do
-			local base = H.ShortName(full)
+		local function consider(base, memberClass)
 			if base == name then
 				isMemberName = true -- a real member with this exact name
-			elseif base:sub(1, #prefix) == prefix then
+			elseif base:sub(1, #prefix) == prefix and not (class and memberClass and memberClass ~= class) then
 				if found and found ~= base then ambiguous = true end
 				found = found or base
 			end
 		end
+		for full, m in pairs(roster) do consider(H.ShortName(full), m.class) end
+		for full, c in pairs(storeNames) do consider(full, c or nil) end
 		if found and not ambiguous and not isMemberName then result = found end
 	end
-	memberCache[name] = result
+	memberCache[cacheKey] = result
 	return result
 end
 
 function H:UpdateRoster()
 	local old = {}
-	for k in pairs(roster) do old[k] = true end
+	for k, v in pairs(roster) do old[k] = v end
 	wipe(roster)
 	if IsInGuild() then
 		local n = GetNumGuildMembers() or 0
+		-- While the roster is still loading it reads as empty: keep the members we had
+		if n == 0 and next(old) then
+			for k, v in pairs(old) do roster[k] = v end
+			return
+		end
 		for i = 1, n do
-			local name, _, _, _, _, _, _, _, online = GetGuildRosterInfo(i)
+			local name, _, _, _, _, _, _, _, online, _, class = GetGuildRosterInfo(i)
 			if usable(name, "string") then
-				roster[H.FullName(name)] = { online = online == true, target = name }
+				roster[H.FullName(name)] = { online = online == true, target = name, class = usable(class, "string") and class or nil }
 			end
 		end
 	end
 	-- The roster refreshes often; only redo the member names when the members themselves changed
 	local changed = false
-	for k in pairs(roster) do if not old[k] then changed = true break end end
+	for k, m in pairs(roster) do if not old[k] or old[k].class ~= m.class then changed = true break end end
 	if not changed then for k in pairs(old) do if not roster[k] then changed = true break end end end
 	if changed then
 		wipe(memberCache)

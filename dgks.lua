@@ -112,6 +112,7 @@ local function surnameSeparator()
 	if type(sep) == "string" and sep ~= "" then return sep end
 	return " "
 end
+dgks.SurnameSeparator = surnameSeparator
 
 -- A name function's two results -> the character's name and realm. On Forever the name is
 -- "First Surname" and there is no realm; elsewhere the name is unchanged and the second result is

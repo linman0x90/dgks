@@ -112,8 +112,8 @@ end
 -- For guild views: whose record this is and what it counts as. A team kill (X) counts as a kill
 -- by the member who landed it, not by whoever saw it.
 local function memberOf(rec)
-	if rec.k == "X" then return H.CanonicalMember(H.ShortName(rec.kn)), rec.kc, "K" end
-	return H.CanonicalMember(H.ShortName(rec.a)), rec.c, rec.k
+	if rec.k == "X" then return H.CanonicalMember(H.ShortName(rec.kn), rec.kc), rec.kc, "K" end
+	return H.CanonicalMember(H.ShortName(rec.a), rec.c), rec.c, rec.k
 end
 
 local function recordTip(rec)
@@ -126,13 +126,13 @@ local function recordTip(rec)
 			tt:AddDoubleLine(role, classColored(describe(rec.ol, rec.orc, rec.oc, rec.os), rec.oc), 1, 1, 1, 1, 1, 1)
 		end
 		if rec.k == "X" and rec.kn then
-			local killer = H.ShortName(rec.kn)
+			local killer = H.CanonicalMember(H.ShortName(rec.kn), rec.kc)
 			local detail = describe(rec.kl, nil, rec.kc, rec.ks)
 			if detail ~= "" then killer = killer .. ", " .. detail end
 			tt:AddDoubleLine("Killing blow", classColored(killer, rec.kc), 1, 1, 1, 1, 1, 1)
 		end
 		if rec.a then
-			local who = H.ShortName(rec.a)
+			local who = H.CanonicalMember(H.ShortName(rec.a), rec.c)
 			local detail = describe(rec.l, nil, rec.c, rec.cs)
 			if detail ~= "" then who = who .. ", " .. detail end
 			tt:AddDoubleLine(rec.k == "X" and "Seen by" or "Player", classColored(who, rec.c), 1, 1, 1, 1, 1, 1)
@@ -217,7 +217,7 @@ local TABS = {
 				local lvl, lvlSort = levelText(rec.ol)
 				if passes(rec, { opp, rec.z, rec.sz, cls, rec.kn }) then
 					rows[#rows + 1] = {
-						cells = { when(rec.t), kindText(rec.k), opponentText(rec, opp) .. (rec.kn and (" |cff9d9d9d(by " .. H.ShortName(rec.kn) .. ")|r") or ""),
+						cells = { when(rec.t), kindText(rec.k), opponentText(rec, opp) .. (rec.kn and (" |cff9d9d9d(by " .. H.CanonicalMember(H.ShortName(rec.kn), rec.kc) .. ")|r") or ""),
 							lvl, classColored(cls, rec.oc), place, rec.st and tostring(rec.st) or "" },
 						sort = { rec.t, rec.k, opp:lower(), lvlSort, cls, place:lower(), rec.st or 0 },
 						tip = recordTip(rec),
