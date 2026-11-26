@@ -137,7 +137,8 @@ check("unknown killer: no lookup", rec4["oc"] is None)
 L.execute("ROWS = dgks.History:ViewRows('mine')")
 rows = [[strip(c) for c in r["cells"].values()] for r in L.eval("ROWS").values()]
 print("  my history:", rows[0])
-check("My history shows the opponent's level, spec + class and location", rows[0][3] == "80" and rows[0][4] == "Fire Mage" and rows[0][5] == "Refuge Pointe, Arathi Highlands")
+check("My history shows spec + class, killer and victim level, and location",
+      rows[0][3] == "Fire Mage" and rows[0][4] == "80" and rows[0][5] == "80" and rows[0][6] == "Refuge Pointe, Arathi Highlands", rows[0])
 tip = []
 L.execute("TTL = {}")
 tt = L.eval('{ AddLine = function(_, t) TTL[#TTL+1] = t end, AddDoubleLine = function(_, l, r) TTL[#TTL+1] = l .. ": " .. r end }')
@@ -166,7 +167,7 @@ rec = L.eval("dgks.History:Record('K', 'Zed-Other', 'Player-2-ZED', 2, 0)")
 check("a victim shown as ?? is stored as -1", rec["ol"] == -1, rec["ol"])
 L.execute("dgks.db.char.history.records = { dgks.db.char.history.records[2] }; ROWS = dgks.History:ViewRows('mine')")
 row = [strip(c) for c in list(L.eval("ROWS").values())[0]["cells"].values()]
-check("Level column shows ?? for -1", row[3] == "??", row)
+check("kill: killer lvl is ours, victim lvl shows ?? for -1", row[4] == "80" and row[5] == "??", row)
 check("kill tooltip names the victim with level", "Victim: Level ?? Undead Fire Mage" in tooltip_of(), tooltip_of())
 
 # Team kill: the killer is a raid member we can see
@@ -179,6 +180,19 @@ L.execute("ROWS = dgks.History:ViewRows('mine')")
 lines = tooltip_of()
 check("team kill tooltip: victim and killing blow with levels",
       "Victim: Level 79 Undead Fire Mage" in lines and "Killing blow: Bob, Level 70 Rogue" in lines, lines)
+row = [strip(c) for c in list(L.eval("ROWS").values())[0]["cells"].values()]
+check("team kill row: killer lvl from the killer, victim lvl from the victim", (row[4], row[5]) == ("70", "79"), row)
+
+# Every kind of record, including old ones saved before levels were recorded: nothing is stored or changed
+levels = L.eval("function(r) return dgks.History.KillerVictimLevels(r) end")
+lv = lambda **r: tuple(levels(L.table_from(r)))
+check("death: killer is the opponent, victim is us", lv(k="D", l=80, ol=82) == (82, 80))
+check("duel win: we are the 'killer'; duel loss: the opponent is", lv(k="W", l=80, ol=70) == (80, 70) and lv(k="L", l=80, ol=70) == (70, 80))
+check("old records without levels: both blank, no error", lv(k="K") == (None, None) and lv(k="X", ol=60) == (None, 60))
+L.execute("""dgks.db.char.history.records = { { k = "D", t = NOW, o = "Oldie", a = "Alice-Realm" } }
+ROWS = dgks.History:ViewRows('mine')""")
+row = [strip(c) for c in list(L.eval("ROWS").values())[0]["cells"].values()]
+check("an old record shows empty level cells", (row[4], row[5]) == ("", ""), row)
 
 # Killer no longer visible: the level comes from the player cache
 L.execute("""UNITS.mouseover = { player = true, guid = 'Player-1-CARA', name = 'Cara', realm = 'Realm', class = 'MAGE', race = 'Gnome', level = 75 }
