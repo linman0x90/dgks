@@ -15,7 +15,8 @@
 --   R  (GUILD)    a new record, sent by its author right after it happens
 --   S  (GUILD)    summary: for every stream, the highest sequence number we hold completely.
 --                 Sent at login and every SUMMARY_INTERVAL; postponed when someone else just sent
---                 an identical summary.
+--                 an identical summary. Sent early when a summary shows a member lacks records we
+--                 hold, unless another summary offering all of them comes first.
 --   Q  (WHISPER)  request to a peer whose summary shows newer records: "send stream X after #n"
 --   B  (WHISPER)  a batch of records for one stream, in answer to Q
 --   E  (WHISPER)  end of an answer: "you now have everything in stream X up to #n", and how many
@@ -43,6 +44,9 @@ local PREFIX = "dgksH"
 local PROTOCOL = 1
 local SUMMARY_FIRST_DELAY = 30        -- seconds after login before the first summary
 local SUMMARY_INTERVAL = 15 * 60      -- seconds between summaries
+-- Seconds before an early summary for a member who lacks records we hold. Spread out, so the first
+-- one has time to reach the others and stop theirs.
+local CATCHUP_DELAY_MIN, CATCHUP_DELAY_MAX = 3, 30
 local REQUEST_TIMEOUT = 120           -- seconds before a request that got no answer may be retried
 local MAX_STREAMS_PER_REQUEST = 40
 local MAX_RECORDS_PER_ANSWER = 300    -- per stream per request; the rest follows next round
@@ -65,6 +69,7 @@ local whispered = {}      -- [lowercased name] = time of our last addon whisper 
 local memberCache = {}    -- [name|class] = canonical member name, see H.CanonicalMember
 local storeNames = {}     -- [full name] = class file or false: members named in the guild store
 local nextSummaryAt = 0
+local catchUp             -- [stream] = our head: what the early summary we have scheduled is for
 local myName, myRealm, guildKey
 local legacyKey -- Forever: the key this guild had before the realm fell back to "Unknown" ("Guild-"); still heard
 
@@ -599,6 +604,7 @@ end
 
 function H:SendSummary()
 	nextSummaryAt = now() + SUMMARY_INTERVAL + math.random(0, 60)
+	catchUp = nil
 	if not guildKey or not dgks.db.profile.historyShare then return end
 	local heads, digest = headsAndDigest()
 	send("GUILD", nil, "BULK", "S", guildKey, PROTOCOL, digest, heads)
@@ -614,6 +620,7 @@ local function onSummary(sender, proto, digest, heads)
 	if digest == myDigest then
 		-- Someone just said what we would say: skip our next summary
 		nextSummaryAt = now() + SUMMARY_INTERVAL + math.random(0, 60)
+		catchUp = nil
 		return
 	end
 	local store = guildStore(true)
@@ -628,20 +635,47 @@ local function onSummary(sender, proto, digest, heads)
 				wants[stream] = mine
 				pending[stream] = { peer = sender, at = t, target = head }
 				count = count + 1
+			elseif p and head > mine and head > (p.target or 0) and p.peer ~= sender
+				and not (p.better and p.better.head >= head) then
+				-- Already asking someone who holds less: note this sender, to ask them next (see onEnd)
+				p.better = { peer = sender, head = head }
 			end
 		end
 	end
 	if count > 0 then
 		send("WHISPER", sender, "BULK", "Q", guildKey, wants)
 	end
+	-- We were going to send our summary early for someone who lacked records (see below). If this
+	-- summary offers all of them, they can ask its sender: ours would only add traffic. Summaries that
+	-- are identical to ours already stop it (above); this also covers members whose stores differ a
+	-- little, which is the usual case when many are online and someone logs in.
+	if catchUp then
+		local covered = true
+		for stream, head in pairs(catchUp) do
+			local theirs = heads[stream]
+			if type(theirs) ~= "number" or theirs < head then
+				covered = false
+				break
+			end
+		end
+		if covered then
+			catchUp = nil
+			nextSummaryAt = t + SUMMARY_INTERVAL + math.random(0, 60)
+		end
+	end
 	-- If the sender is missing records we hold (a member who just logged in, say), send our summary
-	-- soon so they can ask for them. Whoever goes first suppresses the identical summaries of the rest.
+	-- soon so they can ask for them, and note what it is for. Whoever goes first stops the rest.
+	local lacking
 	for stream, st in pairs(store.streams) do
 		local theirs = heads[stream]
 		if advertised(st) and (type(theirs) ~= "number" or theirs < st.h) then
-			nextSummaryAt = math.min(nextSummaryAt, t + math.random(3, 15))
-			break
+			lacking = lacking or catchUp or {}
+			lacking[stream] = math.max(lacking[stream] or 0, st.h)
 		end
+	end
+	if lacking then
+		catchUp = lacking
+		nextSummaryAt = math.min(nextSummaryAt, t + math.random(CATCHUP_DELAY_MIN, CATCHUP_DELAY_MAX))
 	end
 end
 
@@ -727,8 +761,13 @@ local function onEnd(sender, stream, upTo, sent)
 	end
 	-- An answer is capped at MAX_RECORDS_PER_ANSWER; ask the same peer for the rest right away
 	if p.target and st.h < p.target and upTo > 0 then
-		pending[stream] = { peer = sender, at = now(), target = p.target }
+		pending[stream] = { peer = sender, at = now(), target = p.target, better = p.better }
 		send("WHISPER", sender, "BULK", "Q", guildKey, { [stream] = st.h })
+	-- A member whose summary came while this answer was on its way holds more: ask them now, rather
+	-- than at the next summary round
+	elseif p.better and st.h < p.better.head and whisperTarget(p.better.peer) then
+		pending[stream] = { peer = p.better.peer, at = now(), target = p.better.head }
+		send("WHISPER", p.better.peer, "BULK", "Q", guildKey, { [stream] = st.h })
 	end
 end
 
