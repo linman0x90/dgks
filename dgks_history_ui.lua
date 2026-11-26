@@ -102,6 +102,25 @@ local function levelText(level)
 end
 H.LevelText = levelText
 
+-- The killer's and the victim's level, from the fields every record already has: the author's level (l),
+-- the opponent's (ol) and, for team kills, the killer's (kl). In a duel the winner counts as the killer.
+-- Nothing new is stored, so older records show whatever their version caught.
+local function killerVictimLevels(rec)
+	if rec.k == "K" or rec.k == "W" then return rec.l, rec.ol end
+	if rec.k == "D" or rec.k == "L" then return rec.ol, rec.l end
+	if rec.k == "X" then return rec.kl, rec.ol end
+	return nil, nil
+end
+H.KillerVictimLevels = killerVictimLevels
+
+-- Cells and sort values for the Killer lvl and Victim lvl columns
+local function levelCells(rec)
+	local killer, victim = killerVictimLevels(rec)
+	local kt, ks = levelText(killer)
+	local vt, vs = levelText(victim)
+	return kt, ks, vt, vs
+end
+
 local function opponentText(rec, name)
 	if H.IsUnknown(rec) then return icon() .. "|cff9d9d9d" .. name .. "|r" end
 	local text = icon(rec.oc, rec.os) .. classColored(name, rec.oc)
@@ -201,12 +220,13 @@ end
 local TABS = {
 	mine = {
 		columns = {
-			{ title = "When", width = 0.17 },
-			{ title = "Type", width = 0.10 },
-			{ title = "Opponent", width = 0.21, desc = false },
-			{ title = "Level", width = 0.06, align = "RIGHT" },
-			{ title = "Class", width = 0.17, desc = false },
-			{ title = "Location", width = 0.22, desc = false },
+			{ title = "When", width = 0.16 },
+			{ title = "Type", width = 0.09 },
+			{ title = "Opponent", width = 0.19, desc = false },
+			{ title = "Class", width = 0.14, desc = false },
+			{ title = "Killer lvl", width = 0.07, align = "RIGHT" },
+			{ title = "Victim lvl", width = 0.07, align = "RIGHT" },
+			{ title = "Location", width = 0.21, desc = false },
 			{ title = "Streak", width = 0.07, align = "RIGHT" },
 		},
 		rows = function()
@@ -214,12 +234,12 @@ local TABS = {
 			for _, rec in ipairs(H:PersonalRecords()) do
 				local opp = H.ShortName(rec.o)
 				local cls, place = classSpec(rec.oc, rec.os), location(rec)
-				local lvl, lvlSort = levelText(rec.ol)
+				local kl, kls, vl, vls = levelCells(rec)
 				if passes(rec, { opp, rec.z, rec.sz, cls, rec.kn }) then
 					rows[#rows + 1] = {
 						cells = { when(rec.t), kindText(rec.k), opponentText(rec, opp) .. (rec.kn and (" |cff9d9d9d(by " .. H.CanonicalMember(H.ShortName(rec.kn), rec.kc) .. ")|r") or ""),
-							lvl, classColored(cls, rec.oc), place, rec.st and tostring(rec.st) or "" },
-						sort = { rec.t, rec.k, opp:lower(), lvlSort, cls, place:lower(), rec.st or 0 },
+							classColored(cls, rec.oc), kl, vl, place, rec.st and tostring(rec.st) or "" },
+						sort = { rec.t, rec.k, opp:lower(), cls, kls, vls, place:lower(), rec.st or 0 },
 						tip = recordTip(rec),
 					}
 				end
@@ -229,12 +249,13 @@ local TABS = {
 	},
 	guild = {
 		columns = {
-			{ title = "When", width = 0.16 },
-			{ title = "Member", width = 0.15, desc = false },
-			{ title = "Type", width = 0.09 },
-			{ title = "Opponent", width = 0.18, desc = false },
-			{ title = "Level", width = 0.06, align = "RIGHT" },
-			{ title = "Class", width = 0.16, desc = false },
+			{ title = "When", width = 0.14 },
+			{ title = "Member", width = 0.14, desc = false },
+			{ title = "Type", width = 0.08 },
+			{ title = "Opponent", width = 0.16, desc = false },
+			{ title = "Class", width = 0.14, desc = false },
+			{ title = "Killer lvl", width = 0.07, align = "RIGHT" },
+			{ title = "Victim lvl", width = 0.07, align = "RIGHT" },
 			{ title = "Location", width = 0.20, desc = false },
 		},
 		rows = function()
@@ -243,11 +264,11 @@ local TABS = {
 				local member, memberClass = memberOf(rec)
 				local opp = H.ShortName(rec.o)
 				local cls, place = classSpec(rec.oc, rec.os), location(rec)
-				local lvl, lvlSort = levelText(rec.ol)
+				local kl, kls, vl, vls = levelCells(rec)
 				if passes(rec, { member, opp, rec.z, rec.sz, cls }) then
 					rows[#rows + 1] = {
-						cells = { when(rec.t), icon(memberClass) .. classColored(member, memberClass), kindText(rec.k), opponentText(rec, opp), lvl, classColored(cls, rec.oc), place },
-						sort = { rec.t, member:lower(), rec.k, opp:lower(), lvlSort, cls, place:lower() },
+						cells = { when(rec.t), icon(memberClass) .. classColored(member, memberClass), kindText(rec.k), opponentText(rec, opp), classColored(cls, rec.oc), kl, vl, place },
+						sort = { rec.t, member:lower(), rec.k, opp:lower(), cls, kls, vls, place:lower() },
 						tip = recordTip(rec),
 					}
 				end

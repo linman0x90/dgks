@@ -229,7 +229,7 @@ rows = list(box["data"].values())
 check("My history lists all 8, newest first", len(rows) == 8 and strip(rows[0]["cells"][3]).startswith("Unknown"), strip(rows[0]["cells"][3]))
 cells = [strip(c["text"]) for c in box["rowFrames"][1]["cells"].values()]
 print("  first row:", cells)
-check("rows drawn through the ScrollBox initializer", cells[1] == "Death" and len(cells) == 7)
+check("rows drawn through the ScrollBox initializer", cells[1] == "Death" and len(cells) == 8)
 check("opponent cells carry class icons (question mark for unknown)", all("|T" in r["cells"][3] for r in rows) and "QuestionMark" in rows[0]["cells"][3])
 fire_row = rows[-1]["cells"][3]
 check("spec icon used when the spec is known", "|T135810:" in fire_row or any("|T135810:" in r["cells"][3] for r in rows), fire_row)
@@ -252,7 +252,7 @@ hist["search"]["SetText"](hist["search"], "")
 
 # Sorting by header
 hdr = list(hist["headers"].values())
-check("headers for My history", [strip(h["label"]["text"]) for h in hdr if h["shown"]] == ["When", "Type", "Opponent", "Level", "Class", "Location", "Streak"])
+check("headers for My history", [strip(h["label"]["text"]) for h in hdr if h["shown"]] == ["When", "Type", "Opponent", "Class", "Killer lvl", "Victim lvl", "Location", "Streak"])
 check("sort arrow on When only", hdr[0]["arrow"]["shown"] and not hdr[2]["arrow"]["shown"])
 hdr[2]["scripts"]["OnClick"](hdr[2])
 rows = list(box["data"].values())
