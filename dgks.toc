@@ -36,3 +36,6 @@ dgks_history_ui.lua
 dgks_window.lua
 dgks_minimap.lua
 dgks_deathrecap.lua
+#@debug@
+dgks_bgprobe.lua
+#@end-debug@
