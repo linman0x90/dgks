@@ -35,11 +35,15 @@ print = function(m) PRINTED[#PRINTED + 1] = m end
 FRAMES = {}
 CreateFrame = function()
   local f = { events = {} }
+  -- Touching the combat log's registration is a protected action in game (ADDON_ACTION_FORBIDDEN)
   function f:RegisterEvent(e)
-    if e == "COMBAT_LOG_EVENT_UNFILTERED" then error("Frame:RegisterEvent(): COMBAT_LOG_EVENT_UNFILTERED is protected") end
+    if e == "COMBAT_LOG_EVENT_UNFILTERED" then FORBIDDEN = (FORBIDDEN or 0) + 1 end
     self.events[e] = true
   end
-  function f:UnregisterEvent(e) self.events[e] = nil end
+  function f:UnregisterEvent(e)
+    if e == "COMBAT_LOG_EVENT_UNFILTERED" then FORBIDDEN = (FORBIDDEN or 0) + 1 end
+    self.events[e] = nil
+  end
   function f:SetScript(_, fn) self.onEvent = fn end
   FRAMES[#FRAMES + 1] = f
   return f
@@ -90,9 +94,8 @@ check("events are ignored while off", len(lines()) == 0)
 
 probe("on")
 text = "\n".join(lines())
-check("on: build, refused combat log and where we are logged",
-      "PROBE ON (12.0.1" in text and "COMBAT_LOG_EVENT_UNFILTERED registration: refused" in text
-      and "instance=pvp zone=Warsong Gulch" in text, text)
+check("on: build and where we are logged", "PROBE ON (12.0.1" in text and "instance=pvp zone=Warsong Gulch" in text, text)
+check("the combat log's registration is never touched (a protected action)", L.eval("FORBIDDEN") is None)
 check("the Killing blows statistic is found by name", "Total Killing Blows [1491]=0" in text and "Fish" not in text, text)
 
 L.execute('FIRE("PARTY_KILL", SECRET, SECRET)')

@@ -276,10 +276,8 @@ end
 local function start()
 	local refused = register()
 	if #refused > 0 then log("REFUSED events: %s", table.concat(refused, ", ")) end
-	-- The combat log is closed to addons on retail: confirm it is still refused
-	local ok, err = pcall(frame.RegisterEvent, frame, "COMBAT_LOG_EVENT_UNFILTERED")
-	log("COMBAT_LOG_EVENT_UNFILTERED registration: %s", ok and "allowed" or ("refused: " .. show(tostring(err))))
-	if ok then frame:UnregisterEvent("COMBAT_LOG_EVENT_UNFILTERED") end
+	-- No test of the combat log here: it is closed to addons on retail, and touching its registration is
+	-- a protected action (ADDON_ACTION_FORBIDDEN), which pcall cannot catch
 	log("C_DamageMeter: %s", type(C_DamageMeter) == "table" and "present" or "missing")
 	startTicker()
 	where("probe started")
