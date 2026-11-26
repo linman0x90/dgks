@@ -294,7 +294,8 @@ local function giveGeneral()
 			},
 			dopreparesound = {
 				type = 'toggle',
-				name = 'Play prepare sound when entering battlegrounds',
+				name = 'Play prepare sound before a battleground or duel starts',
+				desc = 'Battlegrounds: when the 30-second warning shows (English game clients only). Duels: when the countdown starts.',
 				get = function()
 					return dgks.db.profile.dopreparesound
 				end,
@@ -307,6 +308,8 @@ local function giveGeneral()
 			doexecutesound = {
 				type = 'toggle',
 				name = 'Play execute sound when Player target hits threshold',
+				-- The execute sound watches the combat log, which only Classic clients give addons
+				hidden = function() return not classic end,
 				get = function()
 					return dgks.db.profile.doexecutesound
 				end,
@@ -319,6 +322,7 @@ local function giveGeneral()
 			doexecutesoundpve = {
 				type = 'toggle',
 				name = 'Play execute sound when NPC target hits threshold',
+				hidden = function() return not classic end,
 				get = function()
 					return dgks.db.profile.doexecutesoundpve
 				end,
@@ -332,6 +336,7 @@ local function giveGeneral()
 				type = 'range',
 				name = 'Execute Percent',
 				desc = 'The percent health that triggers the execute sound',
+				hidden = function() return not classic end,
 				width = "full",
 				get = function() return dgks.db.profile.doexecutepercent end,
 				set = function(info, v) dgks.db.profile.doexecutepercent = v end,
@@ -343,7 +348,7 @@ local function giveGeneral()
 			},
 			dochatbox = {
 				type = 'toggle',
-				name = 'Print killshots and deaths in chatbox in addition to logging in /dgks',
+				name = 'Print killshots and deaths in the chat window',
 				get = function()
 					return dgks.db.profile.dochatbox
 				end,
@@ -935,7 +940,13 @@ local function giveSoundFileSetup()
 				type = 'execute',
 				width = "full",
 				name = 'Reset to default files',
-				func = function() dgks.db.profile.kssound = dgks.db.defaults.profile.kssound end,
+				-- A copy: with the defaults table itself, later edits changed the defaults too, so this button
+				-- stopped resetting, and AceDB saw every sound as a default and did not save the edits
+				func = function()
+					local files = {}
+					for i, f in ipairs(dgks.db.defaults.profile.kssound) do files[i] = f end
+					dgks.db.profile.kssound = files
+				end,
 			},
 			kssound1 = {
 				type = 'input',
@@ -1255,15 +1266,22 @@ function dgks:GetStreaks()
 	return streak, deathstreak
 end
 
+-- The game setting that turns each selectable sound channel on or off ("Master" has only the main switch)
+local channelSwitch = { SFX = "Sound_EnableSFX", Music = "Sound_EnableMusic", Ambience = "Sound_EnableAmbience" }
+
 function dgks:SoundEventHandler(info, sound)
 	if (dgks.db.profile.dosound) then
-		if (tonumber(GetCVar("Sound_EnableAllSound") and GetCVar("Sound_EnableSFX")) == 1) then
+		local channel = dgks.db.profile.soundchannel or "Master"
+		-- Play when game sound is on and so is the channel chosen in "Sound Channel". This used to check
+		-- the Sound Effects switch whatever the channel, so with effects off nothing played on any channel.
+		local switch = channelSwitch[channel]
+		if GetCVar("Sound_EnableAllSound") == "1" and (not switch or GetCVar(switch) == "1") then
 			--@debug@
 				-- Dev Debugging functions
 				self.Print("DEBUG: Sound: " .. sound )
-				self.Print("DEBUG: Soundchannel: " .. dgks.db.profile.soundchannel )
+				self.Print("DEBUG: Soundchannel: " .. channel )
 			--@end-debug@
-			PlaySoundFile(sound,dgks.db.profile.soundchannel)
+			PlaySoundFile(sound, channel)
 		end
 	end
 end
@@ -1354,8 +1372,9 @@ function dgks:CombatLogEventHandler(info, timestamp, event, hideCaster, sourceGU
 				-- This _DAMAGE event is for out target
 				if UnitIsEnemy("player","target") then 
 					-- This is an enemy
-					if bit.band(destFlags, COMBATLOG_OBJECT_TYPE_PLAYER) == COMBATLOG_OBJECT_TYPE_PLAYER or dgks.db.profile.doexecutesoundpve then
-						-- dest is a player or pve is enabled
+					local isPlayerTarget = bit.band(destFlags, COMBATLOG_OBJECT_TYPE_PLAYER) == COMBATLOG_OBJECT_TYPE_PLAYER
+					if (isPlayerTarget and dgks.db.profile.doexecutesound) or (not isPlayerTarget and dgks.db.profile.doexecutesoundpve) then
+						-- A player with the player option on, or an NPC with the NPC option on
 						local targetHealthPercent = floor(UnitHealth("target") / UnitHealthMax("target") * 100,0)
 						if targetHealthPercent <= dgks.db.profile.doexecutepercent and targetHealthPercent > 1 then
 							-- Target is under threshold
@@ -1469,7 +1488,15 @@ function dgks:OnCommReceived(cchan, message, distribution, sender)
 	-- If raid broadcast is off and we received a raid broadcast just return
 	if not dgks.db.profile.doraid and distribution == "RAID" then return end
 	if not dgks.db.profile.doraid and distribution == "PARTY" then return end
-	if not dgks.db.profile.doraid and distribution == "INSTANCE_CHAT" then return end
+	-- Instance chat is the battleground or arena team there (the "Battleground" option, as for sending),
+	-- and the group in dungeons and raids from the group finder
+	if distribution == "INSTANCE_CHAT" then
+		if inBG or inArena then
+			if not dgks.db.profile.dobg then return end
+		elseif not dgks.db.profile.doraid then
+			return
+		end
+	end
 
 	local timestamp = time()
 	
@@ -1649,7 +1676,10 @@ function dgks:ProcessKillshot(cchan, rxkiller, rxvictim, rxtimestamp, rxstreak, 
 		-- This now triggers a global cool and most likely cannot work anymore
 		-- if dgks.db.profile.dopet then C_PetJournal.SummonRandomPet(allPets) end
 
-		if dgks.db.profile.doscreenshotonkill then Screenshot()
+		-- A duel win has its own screenshot option; the killshot ones are for kills
+		if cchan == "dgksDUEL" then
+			if dgks.db.profile.doscreenshotonduelwin then Screenshot() end
+		elseif dgks.db.profile.doscreenshotonkill then Screenshot()
 		elseif dgks.db.profile.doscreenshotonstreak and setMaxStreak then Screenshot()
 		elseif dgks.db.profile.doscreenshotonmultikill and rxmultikill > 0 then Screenshot() end
 
