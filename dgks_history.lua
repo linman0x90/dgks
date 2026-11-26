@@ -349,13 +349,23 @@ local function retryUnread()
 	end
 end
 
--- Every record in the current guild store, as a list
 -- Two records within this many seconds of each other describe the same kill
 local SAME_KILL_WINDOW = 15
 
+local buildGuildRecords
+
 -- Every record in the current guild store, as a list. Team kills (X) are dropped when the killer
 -- recorded the kill themselves, or when another member already reported the same kill.
+-- Built once and kept until the history changes (H:NotifyChanged) or the guild does: the window asks
+-- for it on every refresh, and the tooltip counts after every change. Callers must not change the list.
 function H:GuildRecords()
+	if H.guildRecordsCache and H.guildRecordsKey == guildKey then return H.guildRecordsCache end
+	local list = buildGuildRecords()
+	H.guildRecordsCache, H.guildRecordsKey = list, guildKey
+	return list
+end
+
+buildGuildRecords = function()
 	local list, teamKills = {}, {}
 	local store = guildStore(false)
 	if not store then return list end
@@ -830,7 +840,7 @@ local function mergeGuildStore(oldKey)
 		end
 	end
 	if next(old.streams) == nil then guilds[oldKey] = nil end
-	H.countCache = nil
+	H.countCache, H.guildRecordsCache = nil, nil
 end
 
 -- The only keys a guild's history has been saved under on Forever: "Guild-" (before 12.0.010) and
@@ -1089,6 +1099,7 @@ H.listeners = {}
 local notifyScheduled = false
 function H:NotifyChanged()
 	H.countCache = nil
+	H.guildRecordsCache = nil
 	if notifyScheduled then return end
 	notifyScheduled = true
 	C_Timer.After(1, function()

@@ -319,6 +319,24 @@ clock.now += 120
 check("friend whisper hidden only for a minute", nf("Fred") is False)
 
 
+# The guild record list is built once and kept until the history changes
+print("-- guild record list kept between changes")
+net = Network()
+A = net.clients["Alice"] = Client("Alice", net, clock)
+B = net.clients["Bob"] = Client("Bob", net, clock)
+A.run("dgks.History:Record('K', 'One', nil, 1, 0)"); A.tick(); net.deliver()
+check("the list is built once and reused", B.L.eval("dgks.History:GuildRecords() == dgks.History:GuildRecords()") is True)
+A.run("dgks.History:Record('K', 'Two', nil, 1, 0)"); A.tick(); net.deliver()
+check("a member's live record shows at once (2)", B.guild_count() == 2, B.guild_count())
+B.run("dgks.History:Record('D', 'Three', nil, 0, 0)")
+check("our own record shows at once (3)", B.guild_count() == 3, B.guild_count())
+clock.now += 100 * 86400
+B.run("dgks.History:Prune()")
+check("pruning updates the list (0)", B.guild_count() == 0, B.guild_count())
+A.run("dgks.History:Record('K', 'Four', nil, 1, 0)"); A.tick(); net.deliver()
+B.run("dgks.History:ClearGuild()")
+check("clearing the guild history empties the list", B.guild_count() == 0, B.guild_count())
+
 # A batch lost on the way: the end marker must not move the head past records that never arrived
 print("-- lost batch")
 net = Network()
