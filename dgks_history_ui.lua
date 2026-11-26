@@ -146,8 +146,12 @@ local function recordTip(rec)
 		if rec.st and rec.st > 0 then tt:AddDoubleLine("Streak", tostring(rec.st), 1, 1, 1, 1, 1, 1) end
 		if rec.mk then tt:AddDoubleLine("Multikill", tostring(rec.mk + 1) .. " kills", 1, 1, 1, 1, 1, 1) end
 		if rec.lg then tt:AddLine("Imported from the old kill and death lists", 0.6, 0.6, 0.6) end
-		if H.IsUnknown(rec) then
+		if H.IsUnknown(rec) and rec.k == "K" then
+			tt:AddLine("A killing blow of yours in a battleground or arena. The game did not say on whom.", 0.6, 0.6, 0.6, true)
+		elseif H.IsUnknown(rec) then
 			tt:AddLine("The game did not say who the killer was.", 0.6, 0.6, 0.6, true)
+		elseif rec.g and rec.k == "K" then
+			tt:AddLine("Likely victim: your target, who died as you landed a killing blow. The game did not name the victim.", 0.6, 0.6, 0.6, true)
 		elseif rec.g then
 			local others = (rec.gn or 1) > 1 and (" (one of %d enemies targeting you)"):format(rec.gn) or ""
 			tt:AddLine("Likely killer: targeting you when you died" .. others .. ". The game did not name the killer.", 0.6, 0.6, 0.6, true)

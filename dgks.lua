@@ -1398,7 +1398,9 @@ function dgks:CombatLogEventHandler(info, timestamp, event, hideCaster, sourceGU
 	end 
 end
 
-function dgks:KillshotTX(txvictim,txtimestamp,txvictimGUID)
+-- flags (optional, for history): { guessed = 1 } when the victim's name is a guess, { unknown = true }
+-- when txvictim is a description rather than a name (see the battleground killing blows below)
+function dgks:KillshotTX(txvictim,txtimestamp,txvictimGUID,flags)
 	-- One death is one kill. The combat-log path can report the same death twice: PARTY_KILL and the
 	-- pet-credited UNIT_DIED branch, a few milliseconds apart. Drop a kill of the same victim within
 	-- 2 seconds of the last one (nobody dies twice that fast). This used to be caught by the duplicate
@@ -1431,7 +1433,7 @@ function dgks:KillshotTX(txvictim,txtimestamp,txvictimGUID)
 	-- Recorded first, so the "killed N times" line counts this kill.
 	justRecorded = nil
 	if txvictimGUID == nil or isPlayerGUID(txvictimGUID) or self:LogsPvE() then
-		justRecorded = self.History:Record("K", txvictim, txvictimGUID, streak, multikill)
+		justRecorded = self.History:Record("K", txvictim, txvictimGUID, streak, multikill, flags)
 	end
 	-- Handle it locally first: sounds and text must not depend on our own broadcast coming back
 	-- (it does not when we are in no guild or group, or when addon messages are locked down).
@@ -2163,7 +2165,8 @@ function dgks:TestPlayerDeath()
 end
 --@end-debug@
 
-if classic then 
+local syncKillingBlows -- retail and Forever: takes the killing blow count as it is now (set below)
+if classic then
 	function events:COMBAT_LOG_EVENT_UNFILTERED(info, event, ...)
 		local timestamp, event, hideCaster, sourceGUID, sourceName, sourceFlags, sourceFlags2, destGUID, destName, destFlags, destFlags2 = CombatLogGetCurrentEventInfo()
 		-- Keep the last seconds of damage we take for the death recap window (dgks_deathrecap.lua)
@@ -2179,11 +2182,83 @@ if classic then
 	else
 	-- This section handles Retail and Forever
 	local inInstance, instanceType = IsInInstance()
+
+	-- Battlegrounds and arenas: the game hides both GUIDs of PARTY_KILL (secret values), so it doesn't say
+	-- who landed the killing blow or on whom. Our own count of killing blows, the statistic "Total Killing
+	-- Blows" (achievement criteria 1487), is still readable and goes up with each of ours, so a PARTY_KILL
+	-- that comes with it going up was ours. MiniKillingBlow and HK Sounds do the same.
+	local KILLING_BLOWS_STATISTIC = 1487
+	local UNKNOWN_VICTIM = "an enemy player"
+	local killingBlowCount -- the count as last seen
+	local function readKillingBlows()
+		if not GetAchievementCriteriaInfoByID then return nil end
+		local ok, _, _, _, quantity = pcall(GetAchievementCriteriaInfoByID, KILLING_BLOWS_STATISTIC, 0)
+		if not ok or isSecret(quantity) or type(quantity) ~= "number" then return nil end
+		return quantity
+	end
+	syncKillingBlows = function() killingBlowCount = readKillingBlows() end
+	-- Did the count go up since we last looked? Each PARTY_KILL takes at most one killing blow from it.
+	local function takeKillingBlow()
+		local now = readKillingBlows()
+		if not now then return false end
+		if killingBlowCount and now > killingBlowCount then
+			killingBlowCount = killingBlowCount + 1
+			return true
+		end
+		killingBlowCount = now
+		return false
+	end
+
+	-- Our target when it died. PLAYER_TARGET_DIED fires as it dies, and its name is still readable there
+	-- in a battleground (the GUID and class are not).
+	local lastTargetDeath -- { name = "Name-Realm" or "Name", t = GetTime() }
+	function events:PLAYER_TARGET_DIED()
+		lastTargetDeath = nil
+		local ok, isPlayer = pcall(UnitIsPlayer, "target")
+		if not ok or isSecret(isPlayer) or isPlayer ~= true then return end
+		local ok2, name, realm = pcall(UnitFullName, "target")
+		if not ok2 or isSecret(name) or isSecret(realm) then return end
+		name, realm = dgks.SplitName(name, realm) -- Forever: "First Surname", no realm
+		if type(name) ~= "string" or name == "" then return end
+		lastTargetDeath = { name = (type(realm) == "string" and realm ~= "") and (name .. "-" .. realm) or name, t = GetTime() }
+	end
+
+	-- A killing blow of ours that the game hid. The victim is our target if it died at that moment, marked
+	-- as likely (we could have killed someone else while a teammate killed our target); otherwise unknown.
+	-- On retail since 12.0.5 enemy identities are secret in battlegrounds and arenas, so the name is often
+	-- hidden there too; Forever showed it (#35). Looked up a frame later: PLAYER_TARGET_DIED and PARTY_KILL
+	-- come at the same moment, in either order.
+	local function hiddenKillingBlow(at)
+		C_Timer.After(0, function()
+			local d = lastTargetDeath
+			if d and math.abs(d.t - at) <= 1 then
+				lastTargetDeath = nil
+				dgks:KillshotTX(d.name, GetTime(), nil, { guessed = 1 })
+			else
+				dgks:KillshotTX(UNKNOWN_VICTIM, GetTime(), nil, { unknown = true })
+			end
+		end)
+	end
+
 	-- If we are in an instance we will not use the PARTY_KILL event, since it is protected
 	function events:PARTY_KILL(attackerGUID, targetGUID)
 		-- In restricted content the GUIDs arrive as secret values, which addon code cannot compare or inspect.
 		-- This guard must stay outside the debug block below, which is stripped from release builds.
-		if isSecret(attackerGUID) or isSecret(targetGUID) then return end
+		if isSecret(attackerGUID) or isSecret(targetGUID) then
+			if inBG or inArena then
+				local at = GetTime()
+				if takeKillingBlow() then
+					hiddenKillingBlow(at)
+				else
+					-- In case the count is updated just after the event
+					C_Timer.After(0.5, function() if takeKillingBlow() then hiddenKillingBlow(at) end end)
+				end
+			end
+			return
+		end
+		-- Readable GUIDs: handled below. Keep the count in step, so a killing blow seen here is not taken again
+		-- by a hidden PARTY_KILL later.
+		C_Timer.After(0.5, syncKillingBlows)
 		-- A killing blow by a pet counts for its owner: ours as our kill, a group member's as their team kill
 		attackerGUID = petOwner(attackerGUID) or attackerGUID
 		--@debug@
@@ -2350,6 +2425,8 @@ function events:ZONE_CHANGED_NEW_AREA(info, event, ...)
 
 	-- Check for Arena and Battleground
 	updatePvPInstanceState()
+	-- Killing blows outside (open world, other instances) moved the count: start from here
+	if syncKillingBlows then syncKillingBlows() end
 
 	--if (dgks.db.profile.dopreparesound) then
 		--local junk
@@ -2363,6 +2440,7 @@ end
 function events:PLAYER_ENTERING_WORLD()
 	-- Login or /reload inside a battleground or arena: ZONE_CHANGED_NEW_AREA does not fire then
 	updatePvPInstanceState()
+	if syncKillingBlows then syncKillingBlows() end
 end
 
 function events:CHAT_MSG_BG_SYSTEM_NEUTRAL(msg, ...)
