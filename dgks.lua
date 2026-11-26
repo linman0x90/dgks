@@ -1693,7 +1693,7 @@ function dgks:PlayerDeath(myKiller, flags, guid, killerIsPlayer)
 		elseif flags and flags.guessed then
 			dgks:Print("You were likely killed by " .. myKiller .. ".")
 		else
-			dgks:Print("You have been killed by " .. myKiller .. timesText(myKiller, "D", rec) .. ".")
+			dgks:Print("You been murdered by " .. myKiller .. timesText(myKiller, "D", rec) .. ".")
 		end
 	end
 	local recapKiller = myKiller

@@ -77,16 +77,16 @@ def advance():
 
 
 r = lines("dgks:PlayerDeath('Zed-Other', nil, 'Player-2-ZED')")
-check("first death: once", r == ["You have been killed by Zed-Other once."], r)
+check("first death: once", r == ["You been murdered by Zed-Other once."], r)
 advance()
 r = lines("dgks:PlayerDeath('Zed-Other', nil, 'Player-2-ZED')")
-check("second death: 2 times", r == ["You have been killed by Zed-Other 2 times."], r)
+check("second death: 2 times", r == ["You been murdered by Zed-Other 2 times."], r)
 advance()
 r = lines("dgks:PlayerLoss('Zed-Other')")
 check("a duel loss is counted on its own", r == ["You have been defeated by Zed-Other once."], r)
 advance()
 r = lines("dgks:PlayerDeath('Zed-Other', nil, 'Player-2-ZED')")
-check("the duel loss is not a death: 3 times", r == ["You have been killed by Zed-Other 3 times."], r)
+check("the duel loss is not a death: 3 times", r == ["You been murdered by Zed-Other 3 times."], r)
 
 advance()
 r = lines("dgks:KillshotTX('Zed', NOW, 'Player-2-ZED')")
