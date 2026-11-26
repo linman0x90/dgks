@@ -170,6 +170,15 @@ local function recordTip(rec)
 	end
 end
 
+-- Tooltip for an opponent in the opponents views: the name, then spec and class (no Class column)
+local function opponentTip(o)
+	return function(tt)
+		tt:AddLine(classColored(o.name, o.class))
+		local cls = classSpec(o.class, o.spec)
+		if cls ~= "" then tt:AddLine(classColored(cls, o.class)) end
+	end
+end
+
 -- Filters ---------------------------------------------------------------------------------------
 
 local PERIODS = { [86400] = "24 hours", [604800] = "7 days", [2592000] = "30 days",
@@ -186,8 +195,8 @@ local ui = {
 	sort = {
 		mine = { col = 1, desc = true },
 		guild = { col = 1, desc = true },
-		opponents = { col = 3, desc = true },
-		guildopponents = { col = 3, desc = true },
+		opponents = { col = 2, desc = true },
+		guildopponents = { col = 2, desc = true },
 		leaders = { col = 2, desc = true },
 	},
 }
@@ -216,12 +225,11 @@ end
 local TABS = {
 	mine = {
 		columns = {
-			{ title = "When", width = 0.17 },
+			{ title = "When", width = 0.18 },
 			{ title = "Type", width = 0.10 },
-			{ title = "Opponent", width = 0.25, desc = false },
-			{ title = "Class", width = 0.17, desc = false },
-			{ title = "Location", width = 0.24, desc = false },
-			{ title = "Streak", width = 0.07, align = "RIGHT" },
+			{ title = "Opponent", width = 0.32, desc = false },
+			{ title = "Location", width = 0.32, desc = false },
+			{ title = "Streak", width = 0.08, align = "RIGHT" },
 		},
 		rows = function()
 			local rows = {}
@@ -231,9 +239,8 @@ local TABS = {
 				if passes(rec, { opp, rec.z, rec.sz, cls, rec.kn }) then
 					local by = rec.kn and (" |cff9d9d9d(by " .. levelPrefix(rec.kl) .. H.CanonicalMember(H.ShortName(rec.kn), rec.kc) .. ")|r") or ""
 					rows[#rows + 1] = {
-						cells = { when(rec.t), kindText(rec.k), opponentText(rec, opp) .. by,
-							classColored(cls, rec.oc), place, rec.st and tostring(rec.st) or "" },
-						sort = { rec.t, rec.k, opp:lower(), cls, place:lower(), rec.st or 0 },
+						cells = { when(rec.t), kindText(rec.k), opponentText(rec, opp) .. by, place, rec.st and tostring(rec.st) or "" },
+						sort = { rec.t, rec.k, opp:lower(), place:lower(), rec.st or 0 },
 						tip = recordTip(rec),
 					}
 				end
@@ -244,11 +251,10 @@ local TABS = {
 	guild = {
 		columns = {
 			{ title = "When", width = 0.16 },
-			{ title = "Member", width = 0.18, desc = false },
+			{ title = "Member", width = 0.22, desc = false },
 			{ title = "Type", width = 0.09 },
-			{ title = "Opponent", width = 0.21, desc = false },
-			{ title = "Class", width = 0.16, desc = false },
-			{ title = "Location", width = 0.20, desc = false },
+			{ title = "Opponent", width = 0.27, desc = false },
+			{ title = "Location", width = 0.26, desc = false },
 		},
 		rows = function()
 			local rows = {}
@@ -258,8 +264,8 @@ local TABS = {
 				local cls, place = classSpec(rec.oc, rec.os), location(rec)
 				if passes(rec, { member, opp, rec.z, rec.sz, cls }) then
 					rows[#rows + 1] = {
-						cells = { when(rec.t), levelPrefix(memberLevel(rec)) .. icon(memberClass) .. classColored(member, memberClass), kindText(rec.k), opponentText(rec, opp), classColored(cls, rec.oc), place },
-						sort = { rec.t, member:lower(), rec.k, opp:lower(), cls, place:lower() },
+						cells = { when(rec.t), levelPrefix(memberLevel(rec)) .. icon(memberClass) .. classColored(member, memberClass), kindText(rec.k), opponentText(rec, opp), place },
+						sort = { rec.t, member:lower(), rec.k, opp:lower(), place:lower() },
 						tip = recordTip(rec),
 					}
 				end
@@ -270,12 +276,11 @@ local TABS = {
 	opponents = {
 		noKindFilter = true,
 		columns = {
-			{ title = "Opponent", width = 0.23, desc = false },
-			{ title = "Class", width = 0.22, desc = false },
-			{ title = "Kills", width = 0.09, align = "RIGHT" },
-			{ title = "Deaths", width = 0.09, align = "RIGHT" },
-			{ title = "Duels W-L", width = 0.12, align = "RIGHT" },
-			{ title = "Last seen", width = 0.25 },
+			{ title = "Opponent", width = 0.36, desc = false },
+			{ title = "Kills", width = 0.11, align = "RIGHT" },
+			{ title = "Deaths", width = 0.11, align = "RIGHT" },
+			{ title = "Duels W-L", width = 0.14, align = "RIGHT" },
+			{ title = "Last seen", width = 0.28 },
 		},
 		rows = function()
 			local byName, list = {}, {}
@@ -297,8 +302,9 @@ local TABS = {
 			local rows = {}
 			for _, o in ipairs(list) do
 				rows[#rows + 1] = {
-					cells = { icon(o.class, o.spec) .. classColored(o.name, o.class), classColored(classSpec(o.class, o.spec), o.class), tostring(o.K), tostring(o.D), o.W .. "-" .. o.L, when(o.last) },
-					sort = { o.name:lower(), classSpec(o.class, o.spec), o.K, o.D, o.W - o.L, o.last },
+					cells = { icon(o.class, o.spec) .. classColored(o.name, o.class), tostring(o.K), tostring(o.D), o.W .. "-" .. o.L, when(o.last) },
+					sort = { o.name:lower(), o.K, o.D, o.W - o.L, o.last },
+					tip = opponentTip(o),
 				}
 			end
 			return rows
@@ -307,14 +313,13 @@ local TABS = {
 	guildopponents = {
 		noKindFilter = true,
 		columns = {
-			{ title = "Opponent", width = 0.16, desc = false },
-			{ title = "Class", width = 0.17, desc = false },
-			{ title = "Kills", width = 0.07, align = "RIGHT" },
+			{ title = "Opponent", width = 0.25, desc = false },
+			{ title = "Kills", width = 0.08, align = "RIGHT" },
 			{ title = "Deaths", width = 0.08, align = "RIGHT" },
 			{ title = "Duels W-L", width = 0.10, align = "RIGHT" },
-			{ title = "Fought by", width = 0.09, align = "RIGHT" },
-			{ title = "Top killer", width = 0.15, desc = false },
-			{ title = "Last seen", width = 0.18 },
+			{ title = "Fought by", width = 0.10, align = "RIGHT" },
+			{ title = "Top killer", width = 0.19, desc = false },
+			{ title = "Last seen", width = 0.20 },
 		},
 		rows = function()
 			local byKey, list = {}, {}
@@ -360,11 +365,11 @@ local TABS = {
 					topSort = top.name:lower()
 				end
 				rows[#rows + 1] = {
-					cells = { icon(o.class, o.spec) .. classColored(o.name, o.class), classColored(classSpec(o.class, o.spec), o.class), tostring(o.K), tostring(o.D),
+					cells = { icon(o.class, o.spec) .. classColored(o.name, o.class), tostring(o.K), tostring(o.D),
 						o.W .. "-" .. o.L, tostring(o.memberCount), topText, when(o.last) },
-					sort = { o.name:lower(), classSpec(o.class, o.spec), o.K, o.D, o.W - o.L, o.memberCount, topSort, o.last },
+					sort = { o.name:lower(), o.K, o.D, o.W - o.L, o.memberCount, topSort, o.last },
 					tip = function(tt)
-						tt:AddLine(classColored(o.name, o.class))
+						opponentTip(o)(tt)
 						tt:AddLine(("Guild: %d kills, %d deaths, duels %d-%d"):format(o.K, o.D, o.W, o.L), 1, 1, 1)
 						tt:AddLine(" ")
 						for i = 1, math.min(10, #members) do

@@ -137,8 +137,8 @@ check("unknown killer: no lookup", rec4["oc"] is None)
 L.execute("ROWS = dgks.History:ViewRows('mine')")
 rows = [[strip(c) for c in r["cells"].values()] for r in L.eval("ROWS").values()]
 print("  my history:", rows[0])
-check("My history shows the killer's level before their name, spec + class, and location",
-      rows[0][2] == "80 Zed-Other" and rows[0][3] == "Fire Mage" and rows[0][4] == "Refuge Pointe, Arathi Highlands", rows[0])
+check("My history shows the killer's level before their name and the location, no Class column",
+      rows[0][2] == "80 Zed-Other" and rows[0][3] == "Refuge Pointe, Arathi Highlands" and len(rows[0]) == 5, rows[0])
 tip = []
 L.execute("TTL = {}")
 tt = L.eval('{ AddLine = function(_, t) TTL[#TTL+1] = t end, AddDoubleLine = function(_, l, r) TTL[#TTL+1] = l .. ": " .. r end }')
@@ -149,7 +149,10 @@ check("tooltip: killer level/race/spec/class, you with spec, location",
       "Killer: Level 80 Undead Fire Mage" in lines and "Player: Alice, Level 80 Holy Paladin" in lines and "Location: Refuge Pointe, Arathi Highlands" in lines)
 L.execute("ROWS = dgks.History:ViewRows('opponents')")
 rows = [[strip(c) for c in r["cells"].values()] for r in L.eval("ROWS").values()]
-check("My opponents shows spec + class", ["Zed-Other", "Fire Mage"] == rows[[r[0] for r in rows].index("Zed-Other")][:2], rows)
+zrow = list(L.eval("ROWS").values())[[r[0] for r in rows].index("Zed-Other")]
+L.execute("TTL = {}")
+zrow["tip"](L.eval('{ AddLine = function(_, t) TTL[#TTL+1] = t end }'))
+check("My opponents: spec + class in the row tooltip", [strip(x) for x in L.eval("TTL").values()] == ["Zed-Other", "Fire Mage"], rows)
 
 # 7. Levels of the killer and the victim
 def tooltip_of(index=0):
@@ -167,7 +170,7 @@ rec = L.eval("dgks.History:Record('K', 'Zed-Other', 'Player-2-ZED', 2, 0)")
 check("a victim shown as ?? is stored as -1", rec["ol"] == -1, rec["ol"])
 L.execute("dgks.db.char.history.records = { dgks.db.char.history.records[2] }; ROWS = dgks.History:ViewRows('mine')")
 row = [strip(c) for c in list(L.eval("ROWS").values())[0]["cells"].values()]
-check("kill row: the victim's level (?? for -1) sits left of their icon and name", row[2] == "?? Zed-Other" and len(row) == 6, row)
+check("kill row: the victim's level (?? for -1) sits left of their icon and name", row[2] == "?? Zed-Other" and len(row) == 5, row)
 check("kill tooltip names the victim with level", "Victim: Level ?? Undead Fire Mage" in tooltip_of(), tooltip_of())
 
 # Team kill: the killer is a raid member we can see
@@ -206,7 +209,7 @@ ROWS = dgks.History:ViewRows('guild')""")
 grows = [[strip(c) for c in r["cells"].values()] for r in L.eval("ROWS").values()]
 death = next((r for r in grows if r[3].endswith("Zed-Other")), None)
 team = next((r for r in grows if r[3].endswith("Vex-Other")), None)
-check("guild row: member and opponent each led by their own level", death and death[1] == "70 Bob" and death[3] == "82 Zed-Other" and len(death) == 6, grows)
+check("guild row: member and opponent each led by their own level", death and death[1] == "70 Bob" and death[3] == "82 Zed-Other" and len(death) == 5, grows)
 check("guild team kill: the killer's level before the killer", team and team[1] == "75 Cy" and team[3] == "60 Vex-Other", grows)
 
 gname = L.eval("function(k) return dgks.History.GuildDisplayName(k) end")
