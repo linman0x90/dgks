@@ -132,7 +132,7 @@ check("leaderboard: Bob has 2 kills (one witnessed, one his own), witnesses get 
 A.run("ROWS = dgks.History:ViewRows('guildopponents')")
 rows = [[strip(c) for c in r["cells"].values()] for r in A.L.eval("ROWS").values()]
 print("  guild opponents:", rows)
-check("guild opponents: Zed killed twice by the guild, top killer Bob", rows and rows[0][2] == "2" and rows[0][6] == "Bob (2)")
+check("guild opponents: Zed killed twice by the guild, top killer Bob", rows and rows[0][1] == "2" and rows[0][5] == "Bob (2)")
 A.run("ROWS = dgks.History:ViewRows('opponents')")
 rows = [[strip(c) for c in r["cells"].values()] for r in A.L.eval("ROWS").values()]
 check("My opponents ignores team kills", rows == [], rows)

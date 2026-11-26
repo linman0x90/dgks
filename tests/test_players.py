@@ -137,8 +137,8 @@ check("unknown killer: no lookup", rec4["oc"] is None)
 L.execute("ROWS = dgks.History:ViewRows('mine')")
 rows = [[strip(c) for c in r["cells"].values()] for r in L.eval("ROWS").values()]
 print("  my history:", rows[0])
-check("My history shows spec + class, killer and victim level, and location",
-      rows[0][3] == "Fire Mage" and rows[0][4] == "80" and rows[0][5] == "80" and rows[0][6] == "Refuge Pointe, Arathi Highlands", rows[0])
+check("My history shows the killer's level before their name and the location, no Class column",
+      rows[0][2] == "80 Zed-Other" and rows[0][3] == "Refuge Pointe, Arathi Highlands" and len(rows[0]) == 5, rows[0])
 tip = []
 L.execute("TTL = {}")
 tt = L.eval('{ AddLine = function(_, t) TTL[#TTL+1] = t end, AddDoubleLine = function(_, l, r) TTL[#TTL+1] = l .. ": " .. r end }')
@@ -149,7 +149,10 @@ check("tooltip: killer level/race/spec/class, you with spec, location",
       "Killer: Level 80 Undead Fire Mage" in lines and "Player: Alice, Level 80 Holy Paladin" in lines and "Location: Refuge Pointe, Arathi Highlands" in lines)
 L.execute("ROWS = dgks.History:ViewRows('opponents')")
 rows = [[strip(c) for c in r["cells"].values()] for r in L.eval("ROWS").values()]
-check("My opponents shows spec + class", ["Zed-Other", "Fire Mage"] == rows[[r[0] for r in rows].index("Zed-Other")][:2], rows)
+zrow = list(L.eval("ROWS").values())[[r[0] for r in rows].index("Zed-Other")]
+L.execute("TTL = {}")
+zrow["tip"](L.eval('{ AddLine = function(_, t) TTL[#TTL+1] = t end }'))
+check("My opponents: spec + class in the row tooltip", [strip(x) for x in L.eval("TTL").values()] == ["Zed-Other", "Fire Mage"], rows)
 
 # 7. Levels of the killer and the victim
 def tooltip_of(index=0):
@@ -167,7 +170,7 @@ rec = L.eval("dgks.History:Record('K', 'Zed-Other', 'Player-2-ZED', 2, 0)")
 check("a victim shown as ?? is stored as -1", rec["ol"] == -1, rec["ol"])
 L.execute("dgks.db.char.history.records = { dgks.db.char.history.records[2] }; ROWS = dgks.History:ViewRows('mine')")
 row = [strip(c) for c in list(L.eval("ROWS").values())[0]["cells"].values()]
-check("kill: killer lvl is ours, victim lvl shows ?? for -1", row[4] == "80" and row[5] == "??", row)
+check("kill row: the victim's level (?? for -1) sits left of their icon and name", row[2] == "?? Zed-Other" and len(row) == 5, row)
 check("kill tooltip names the victim with level", "Victim: Level ?? Undead Fire Mage" in tooltip_of(), tooltip_of())
 
 # Team kill: the killer is a raid member we can see
@@ -181,18 +184,40 @@ lines = tooltip_of()
 check("team kill tooltip: victim and killing blow with levels",
       "Victim: Level 79 Undead Fire Mage" in lines and "Killing blow: Bob, Level 70 Rogue" in lines, lines)
 row = [strip(c) for c in list(L.eval("ROWS").values())[0]["cells"].values()]
-check("team kill row: killer lvl from the killer, victim lvl from the victim", (row[4], row[5]) == ("70", "79"), row)
+check("team kill row: each level left of its own name", row[2] == "79 Zed-Other (by 70 Bob)", row)
 
-# Every kind of record, including old ones saved before levels were recorded: nothing is stored or changed
-levels = L.eval("function(r) return dgks.History.KillerVictimLevels(r) end")
-lv = lambda **r: tuple(levels(L.table_from(r)))
-check("death: killer is the opponent, victim is us", lv(k="D", l=80, ol=82) == (82, 80))
-check("duel win: we are the 'killer'; duel loss: the opponent is", lv(k="W", l=80, ol=70) == (80, 70) and lv(k="L", l=80, ol=70) == (70, 80))
-check("old records without levels: both blank, no error", lv(k="K") == (None, None) and lv(k="X", ol=60) == (None, 60))
+# Guild rows credit the member who landed the blow, so the member's level is the killer's on a team kill
+mlevel = L.eval("function(r) return dgks.History.MemberLevel(r) end")
+ml = lambda **r: mlevel(L.table_from(r))
+check("member level: the author's, or the killer's on a team kill", ml(k="D", l=80, ol=82) == 80 and ml(k="X", l=80, kl=70) == 70)
+check("old records without levels: no member level, no error", ml(k="K") is None and ml(k="X", l=80) is None)
+prefix = L.eval("function(v) return dgks.History.LevelPrefix(v) end")
+check("level prefix: number, ?? for -1, nothing when unknown", (prefix(60), prefix(-1), prefix(None), prefix(0)) == ("60 ", "?? ", "", ""))
 L.execute("""dgks.db.char.history.records = { { k = "D", t = NOW, o = "Oldie", a = "Alice-Realm" } }
 ROWS = dgks.History:ViewRows('mine')""")
 row = [strip(c) for c in list(L.eval("ROWS").values())[0]["cells"].values()]
-check("an old record shows empty level cells", (row[4], row[5]) == ("", ""), row)
+check("an old record shows the name with no level", row[2] == "Oldie", row)
+
+# Guild history: the member's level before the member, the opponent's before the opponent
+L.execute("""dgks.History:UpdateGuild()
+local key = dgks.History:GuildKey()
+dgks.db.global.history.guilds[key] = { streams = { ["Bob-Realm#9"] = { h = 2, r = {
+  { a = "Bob-Realm", c = "ROGUE", l = 70, e = 9, s = 1, t = NOW, k = "D", o = "Zed-Other", oc = "MAGE", ol = 82 },
+  { a = "Bob-Realm", c = "ROGUE", l = 70, e = 9, s = 2, t = NOW - 5, k = "X", o = "Vex-Other", oc = "MAGE", ol = 60, kn = "Cy-Realm", kc = "MAGE", kl = 75 },
+} } } }
+ROWS = dgks.History:ViewRows('guild')""")
+grows = [[strip(c) for c in r["cells"].values()] for r in L.eval("ROWS").values()]
+death = next((r for r in grows if r[3].endswith("Zed-Other")), None)
+team = next((r for r in grows if r[3].endswith("Vex-Other")), None)
+check("guild row: member and opponent each led by their own level", death and death[1] == "70 Bob" and death[3] == "82 Zed-Other" and len(death) == 5, grows)
+check("guild team kill: the killer's level before the killer", team and team[1] == "75 Cy" and team[3] == "60 Vex-Other", grows)
+
+gname = L.eval("function(k) return dgks.History.GuildDisplayName(k) end")
+check("guild name shown without the -Unknown stand-in realm, other realms kept",
+      (gname("Forever Guild-Unknown"), gname("Bloodbath-Realm"), gname("Unknown")) == ("Forever Guild", "Bloodbath-Realm", "Unknown"))
+L.execute("UNKNOWNOBJECT = UNKNOWNOBJECT or 'Unknown'")
+status = L.eval("function() return dgks.History.StatusText() end")
+check("status line names the guild", "Guild Bloodbath-" in status() and "-Unknown" not in status(), status())
 
 # Killer no longer visible: the level comes from the player cache
 L.execute("""UNITS.mouseover = { player = true, guid = 'Player-1-CARA', name = 'Cara', realm = 'Realm', class = 'MAGE', race = 'Gnome', level = 75 }
