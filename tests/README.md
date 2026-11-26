@@ -35,6 +35,7 @@ They work from any folder. Each test prints PASS or FAIL for each check and exit
 | `test_guild_opponents.py` | The Guild opponents view: one opponent across realm spellings, totals and top killers |
 | `test_window.py` | The main window: Overview numbers, the 14-day chart, top prey and predators, History rows, sorting and filters |
 | `test_main_window.py` | The Settings tab's History options |
+| `test_version_check.py` | The version check: one reply per player per check whatever channels they heard it on, and none to ourselves |
 | `test_options.py` | The options: what is registered and the order of the Settings tabs |
 | `test_minimap.py` | The minimap button: position, clicks, dragging and tooltip |
 | `test_recap_window.py` | The death recap: rows, times, crits, school and health colours, the killing-blow row and the Compact view |

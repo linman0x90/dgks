@@ -26,7 +26,7 @@ local playerGUID, playerClass, _, playerRace, playerSex, playerName
 local playerFirstName -- Forever: playerName is "First Surname", this is just "First"
 local inArena = false
 local inBG = false
-local lastMessage, lastSender, lastTimestamp --Versionchecking duplicate detection
+local versionAnswered = {} -- [sender, lowercased] = time() we last answered their version check
 local soundPath = "Interface\\AddOns\\dgks\\sounds\\"
 local classic = false -- Assume retail, we will verify below
 
@@ -1482,8 +1482,18 @@ function dgks:OnCommReceived(cchan, message, distribution, sender)
 		if sender ~= playerName then self:VersionReply(sender, message) end
 
 	elseif cchan == "dgksV" then
-		-- Check for duplicates here
-		if sender == lastSender and message == lastMessage and timestamp == lastTimestamp then return end
+		-- Our own check comes back on every channel it went out on (guild, group): nothing to answer
+		if isSecret(sender) or type(sender) ~= "string" or dgks:IsOwnSender(sender) then return end
+		-- One check reaches us once per channel we share with the sender (guild, group, a friend's
+		-- whisper), seconds apart: answer it once. Names are compared the way the game shortens them.
+		local key = sender
+		if type(Ambiguate) == "function" then
+			local ok, short = pcall(Ambiguate, sender, "none")
+			if ok and type(short) == "string" and not isSecret(short) then key = short end
+		end
+		key = key:lower()
+		if versionAnswered[key] and timestamp - versionAnswered[key] < 10 then return end
+		versionAnswered[key] = timestamp
 		-- Respond with our version
 
 		--@debug@
@@ -1506,10 +1516,6 @@ function dgks:OnCommReceived(cchan, message, distribution, sender)
 			dgks:ProcessKillshot(cchan, rxkiller, rxvictim, rxtimestamp, rxstreak, rxmultikill, false)
 		end
 	end
-
-	--Set duplicate prevention variables
-	lastMessage, lastSender, lastTimestamp = message, sender, timestamp
-
 end
 
 -- Is this addon-message sender our own character? Senders can arrive as "Name-Realm";
@@ -1880,7 +1886,6 @@ end
 
 -- Version check: ask everyone we broadcast to for their version. Replies (dgksVR) are listed in
 -- Settings > Broadcasts, under the button, instead of in chat.
--- FIXME Entire version checking needs cleanup for duplicate sends
 function dgks:VersionCheck()
 	dgks.versionCheck = { at = time(), replies = {} }
 	self:SendCM("dgksV",version)
