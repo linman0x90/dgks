@@ -158,6 +158,8 @@ def check(label, cond, extra=""):
 
 A = net.clients["Alice"] = Client("Alice", net, clock, legacy=True)
 check("legacy lists imported into personal history (3)", A.personal_count() == 3)
+check("legacy lists removed from the profile after the import",
+      A.L.eval("dgks.db.profile.killList == nil and dgks.db.profile.deathList == nil") is True)
 B = net.clients["Bob"] = Client("Bob", net, clock)
 
 for i in range(5):
