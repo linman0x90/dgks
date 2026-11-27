@@ -219,6 +219,29 @@ L.execute("UNKNOWNOBJECT = UNKNOWNOBJECT or 'Unknown'")
 status = L.eval("function() return dgks.History.StatusText() end")
 check("status line names the guild", "Guild Bloodbath-" in status() and "-Unknown" not in status(), status())
 
+# The killing blow's ability and damage: stored on kills and deaths, shown in the tooltip
+L.execute("""dgks.db.char.history.records = {}
+REC = dgks.History:Record('K', 'Zed-Other', nil, 1, 0, { hit = { ability = 'Smite', spellId = 585, amount = 6280 } })
+ROWS = dgks.History:ViewRows('mine')""")
+rec = L.eval("REC")
+check("killing blow stored: ability, spell ID, damage", (rec["ab"], rec["ai"], rec["dm"]) == ("Smite", 585, 6280), (rec["ab"], rec["ai"], rec["dm"]))
+lines = tooltip_of()
+check("kill tooltip: Killing blow line", any(l.startswith("Killing blow: Smite, 6") and l.endswith(" damage") for l in lines), lines)
+L.execute("""dgks.db.char.history.records = {}
+REC = dgks.History:Record('D', 'Zed-Other', nil, 0, 0, { hit = { ability = 'Falling', amount = 2000 } })
+ROWS = dgks.History:ViewRows('mine')""")
+lines = tooltip_of()
+check("death tooltip: Killed by line, no spell ID needed", any(l.startswith("Killed by: Falling, 2") for l in lines) and L.eval("REC.ai") is None, lines)
+L.execute("""REC = dgks.History:Record('W', 'Zed-Other', nil, 0, 0, { hit = { ability = 'Smite', amount = 5 } })""")
+check("duels get no killing blow", L.eval("REC.ab") is None)
+L.execute("""REC = dgks.History:Record('K', 'Zed-Other', nil, 0, 0, { hit = { ability = string.rep('x', 80), spellId = 0, amount = -5 } })""")
+rec = L.eval("REC")
+check("bad values left out, long names cut to 64", len(rec["ab"]) == 64 and rec["ai"] is None and rec["dm"] is None, (rec["ai"], rec["dm"]))
+L.execute("""dgks.db.char.history.records = {}
+REC = dgks.History:Record('K', 'Zed-Other', nil, 1, 0)
+ROWS = dgks.History:ViewRows('mine')""")
+check("no killing blow known: no line", not any(l.startswith("Killing blow") for l in tooltip_of()))
+
 # Killer no longer visible: the level comes from the player cache
 L.execute("""UNITS.mouseover = { player = true, guid = 'Player-1-CARA', name = 'Cara', realm = 'Realm', class = 'MAGE', race = 'Gnome', level = 75 }
 FIRE('UPDATE_MOUSEOVER_UNIT')

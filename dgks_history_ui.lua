@@ -131,6 +131,28 @@ local function memberOf(rec)
 	return H.CanonicalMember(H.ShortName(rec.a), rec.c), rec.c, rec.k
 end
 
+-- "Smite, 628 damage" with the spell's icon, for a record's killing blow (ab, ai, dm), or nil
+local function killingBlowText(rec)
+	if not rec.ab and not rec.dm then return nil end
+	local parts = {}
+	if rec.ab then
+		local icon = ""
+		if rec.ai then
+			local ok, tex
+			if C_Spell and C_Spell.GetSpellTexture then ok, tex = pcall(C_Spell.GetSpellTexture, rec.ai)
+			elseif GetSpellTexture then ok, tex = pcall(GetSpellTexture, rec.ai) end
+			if ok and tex then icon = ("|T%s:14:14:0:0:64:64:5:59:5:59|t "):format(tex) end
+		end
+		parts[#parts + 1] = icon .. rec.ab
+	end
+	if rec.dm then
+		local n = BreakUpLargeNumbers and BreakUpLargeNumbers(rec.dm) or tostring(rec.dm)
+		parts[#parts + 1] = n .. " damage"
+	end
+	return table.concat(parts, ", ")
+end
+H.KillingBlowText = killingBlowText
+
 local function recordTip(rec)
 	return function(tt)
 		tt:AddLine(("%s: %s"):format(H.KIND_NAMES[rec.k] or "?", H.ShortName(rec.o)))
@@ -146,6 +168,9 @@ local function recordTip(rec)
 			if detail ~= "" then killer = killer .. ", " .. detail end
 			tt:AddDoubleLine("Killing blow", classColored(killer, rec.kc), 1, 1, 1, 1, 1, 1)
 		end
+		-- The ability and damage of the killing blow: ours on a kill, the one that killed us on a death
+		local blow = killingBlowText(rec)
+		if blow then tt:AddDoubleLine(rec.k == "D" and "Killed by" or "Killing blow", blow, 1, 1, 1, 1, 1, 1) end
 		if rec.a then
 			local who = H.CanonicalMember(H.ShortName(rec.a), rec.c)
 			local detail = describe(rec.l, nil, rec.c, rec.cs)

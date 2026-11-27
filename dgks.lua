@@ -1383,6 +1383,43 @@ function dgks:CombatLogEventHandler(info, timestamp, event, hideCaster, sourceGU
 	end 
 end
 
+-- The last hit we (or our pet) landed on each target, from Classic's combat log: the killing blow of
+-- a kill is the last hit on the victim just before it died. Retail and Forever close the combat log
+-- to addons, so there this stays empty and kills are recorded without one.
+local lastHits, lastHitCount = {}, 0 -- [victim GUID] = { t, ability, spellId, amount }
+local HIT_EVENTS = { SWING_DAMAGE = "swing", RANGE_DAMAGE = "spell", SPELL_DAMAGE = "spell",
+	SPELL_PERIODIC_DAMAGE = "spell", DAMAGE_SHIELD = "spell", DAMAGE_SPLIT = "spell" }
+
+local function trackDamageDealt(...)
+	local _, event, _, _, _, _, _, destGUID = ...
+	local kind = HIT_EVENTS[event]
+	if not kind or type(destGUID) ~= "string" then return end
+	local hit = { t = GetTime() }
+	if kind == "swing" then
+		hit.ability, hit.amount = "Melee", select(12, ...)
+	else
+		local _
+		hit.spellId, hit.ability, _, hit.amount = select(12, ...)
+	end
+	if lastHits[destGUID] == nil then lastHitCount = lastHitCount + 1 end
+	lastHits[destGUID] = hit
+	-- Forget old targets now and then
+	if lastHitCount > 200 then
+		local now = GetTime()
+		for guid, h in pairs(lastHits) do
+			if now - h.t > 30 then lastHits[guid] = nil; lastHitCount = lastHitCount - 1 end
+		end
+	end
+end
+
+-- Our last hit on this victim if it landed in the last 3 seconds: { ability, spellId, amount }
+local function lastHitOn(guid)
+	if type(guid) ~= "string" or isSecret(guid) then return nil end
+	local hit = lastHits[guid]
+	if not hit or GetTime() - hit.t > 3 then return nil end
+	return { ability = hit.ability, spellId = hit.spellId, amount = hit.amount }
+end
+
 function dgks:KillshotTX(txvictim,txtimestamp,txvictimGUID)
 	-- One death is one kill. The combat-log path can report the same death twice: PARTY_KILL and the
 	-- pet-credited UNIT_DIED branch, a few milliseconds apart. Drop a kill of the same victim within
@@ -1417,7 +1454,9 @@ function dgks:KillshotTX(txvictim,txtimestamp,txvictimGUID)
 	self:ProcessKillshot("dgks", playerName, txvictim, txtimestamp, streak, multikill, true, txvictimGUID)
 	-- NPC killshots (the "Trigger off NPC/PVE Killshots" option) go to history only with PvE logging on
 	if txvictimGUID == nil or isPlayerGUID(txvictimGUID) or self:LogsPvE() then
-		self.History:Record("K", txvictim, txvictimGUID, streak, multikill)
+		-- The killing blow, where we saw it land (Classic's combat log)
+		local hit = lastHitOn(txvictimGUID)
+		self.History:Record("K", txvictim, txvictimGUID, streak, multikill, hit and { hit = hit } or nil)
 	end
 
 	-- Then broadcast our Killshot to other dgks users. Our own echo is dropped in OnCommReceived.
@@ -1686,10 +1725,23 @@ function dgks:PlayerDeath(myKiller, flags, guid, killerIsPlayer)
 			dgks:Print("You been murdered by "..myKiller.." "..#dgks.db.profile.deathList[myKiller].." times.")
 		end
 	end
+	-- The recap of this death, collected once: it gives history the killing blow, then is shown
+	local recap
+	if dgks.CollectDeathRecap then
+		local ok, r = pcall(dgks.CollectDeathRecap, dgks)
+		if ok then recap = r end
+	end
 	-- History keeps deaths to players; deaths to NPCs and the environment only with PvE logging on
 	local rec
 	if self:LogsPvE() or self:KilledByPlayer(myKiller, flags, guid, killerIsPlayer) then
-		rec = dgks.History:Record("D", myKiller, guid, nil, nil, flags)
+		local recFlags = flags
+		local ok, hit = pcall(dgks.KillingBlowOf, dgks, recap)
+		if ok and hit then
+			recFlags = {}
+			for k, v in pairs(flags or {}) do recFlags[k] = v end
+			recFlags.hit = hit
+		end
+		rec = dgks.History:Record("D", myKiller, guid, nil, nil, recFlags)
 	end
 	local recapKiller = myKiller
 	if flags and flags.unknown then
@@ -1699,7 +1751,7 @@ function dgks:PlayerDeath(myKiller, flags, guid, killerIsPlayer)
 	else
 		recapKiller = "killed by " .. myKiller
 	end
-	pcall(dgks.ShowDeathRecap, dgks, recapKiller, rec)
+	pcall(dgks.ShowDeathRecap, dgks, recapKiller, rec, recap)
 	if dgks.db.profile.doscreenshotondeath then Screenshot() end
 end
 
@@ -2173,6 +2225,10 @@ if classic then
 		local timestamp, event, hideCaster, sourceGUID, sourceName, sourceFlags, sourceFlags2, destGUID, destName, destFlags, destFlags2 = CombatLogGetCurrentEventInfo()
 		-- Keep the last seconds of damage we take for the death recap window (dgks_deathrecap.lua)
 		if destGUID == playerGUID then pcall(dgks.TrackDamageTaken, dgks, CombatLogGetCurrentEventInfo()) end
+		-- And the last hit we or our pet landed on each target, for the killing blow of our kills
+		if sourceGUID == playerGUID or petOwner(sourceGUID) == playerGUID then
+			pcall(trackDamageDealt, CombatLogGetCurrentEventInfo())
+		end
 		-- Remember the players we fight, so kill and death records can name their class (dgks_players.lua)
 		if destGUID == playerGUID then
 			dgks.Players:NoteCombatant(sourceGUID, sourceName)

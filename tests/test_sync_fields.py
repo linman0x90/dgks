@@ -119,9 +119,9 @@ C_Map = { GetBestMapForUnit = function() return 14 end }
 '''
 
 RECORD_ALL = r'''
-dgks.History:Record('K', 'Zed', 'Player-1-ZED', 3, 2)
+dgks.History:Record('K', 'Zed', 'Player-1-ZED', 3, 2, { hit = { ability = 'Smite', spellId = 585, amount = 628 } })
 dgks.History:Record('D', 'Hidden by the game', nil, 0, 0, { unknown = true })
-dgks.History:Record('D', 'Zed', 'Player-1-ZED', 0, 0, { guessed = 3 })
+dgks.History:Record('D', 'Zed', 'Player-1-ZED', 0, 0, { guessed = 3, hit = { ability = 'Melee', amount = 95 } })
 dgks.History:Record('W', 'Zed', 'Player-1-ZED', 0, 0)
 dgks.History:Record('L', 'Zed', 'Player-1-ZED', 0, 0)
 dgks.History:RecordTeamKill('Player-1-MATE', 'Player-1-ZED')
