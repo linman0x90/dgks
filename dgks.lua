@@ -1383,7 +1383,9 @@ function dgks:CombatLogEventHandler(info, timestamp, event, hideCaster, sourceGU
 	end 
 end
 
-function dgks:KillshotTX(txvictim,txtimestamp,txvictimGUID)
+-- flags (optional): passed to the history record, e.g. { guessed = 1, level = n, class = "MAGE" } for a
+-- battleground kill whose victim is our target at the time, not a name the game gave
+function dgks:KillshotTX(txvictim,txtimestamp,txvictimGUID,flags)
 	-- One death is one kill. The combat-log path can report the same death twice: PARTY_KILL and the
 	-- pet-credited UNIT_DIED branch, a few milliseconds apart. Drop a kill of the same victim within
 	-- 2 seconds of the last one (nobody dies twice that fast). This used to be caught by the duplicate
@@ -1417,7 +1419,7 @@ function dgks:KillshotTX(txvictim,txtimestamp,txvictimGUID)
 	self:ProcessKillshot("dgks", playerName, txvictim, txtimestamp, streak, multikill, true, txvictimGUID)
 	-- NPC killshots (the "Trigger off NPC/PVE Killshots" option) go to history only with PvE logging on
 	if txvictimGUID == nil or isPlayerGUID(txvictimGUID) or self:LogsPvE() then
-		self.History:Record("K", txvictim, txvictimGUID, streak, multikill)
+		self.History:Record("K", txvictim, txvictimGUID, streak, multikill, flags)
 	end
 
 	-- Then broadcast our Killshot to other dgks users. Our own echo is dropped in OnCommReceived.
@@ -2188,7 +2190,11 @@ if classic then
 	function events:PARTY_KILL(attackerGUID, targetGUID)
 		-- In restricted content the GUIDs arrive as secret values, which addon code cannot compare or inspect.
 		-- This guard must stay outside the debug block below, which is stripped from release builds.
-		if isSecret(attackerGUID) or isSecret(targetGUID) then return end
+		-- In a battleground our own killing blows can still be told apart (dgks_bgkills.lua).
+		if isSecret(attackerGUID) or isSecret(targetGUID) then
+			if dgks.BGKills then pcall(dgks.BGKills.OnHiddenKill, dgks.BGKills) end
+			return
+		end
 		-- A killing blow by a pet counts for its owner: ours as our kill, a group member's as their team kill
 		attackerGUID = petOwner(attackerGUID) or attackerGUID
 		--@debug@
@@ -2344,6 +2350,8 @@ local function updatePvPInstanceState()
 	if isSecret(instanceType) then instanceType = nil end
 	inArena = (instanceType == "arena")
 	inBG = (instanceType == "pvp")
+	-- Battleground kills are counted from the killing-blow statistic: start from its value here
+	if dgks.BGKills then pcall(dgks.BGKills.Reset, dgks.BGKills) end
 end
 
 function events:ZONE_CHANGED_NEW_AREA(info, event, ...)
