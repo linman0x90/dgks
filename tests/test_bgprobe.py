@@ -162,6 +162,69 @@ check("NPC plates are not logged", "name=Npc" not in text())
 L.execute('UnitIsPlayer = function(u) return UNITS[u] ~= nil end; FIRE("NAME_PLATE_UNIT_REMOVED", SECRET)')
 check("a secret unit token is logged, not raised", lines()[-1].endswith("PLATE GONE unit=SECRET"), lines()[-1])
 
+# 6b. The damage meter, dumped when we leave combat
+L.execute(r'''
+Enum = { DamageMeterType = { DamageDone = 0, DamageTaken = 7, Deaths = 9, EnemyDamageTaken = 10 },
+  DamageMeterSessionType = { Overall = 0, Current = 1 } }
+IN_COMBAT = false
+InCombatLockdown = function() return IN_COMBAT end
+local ME = { name = "Me", classFilename = "PALADIN", totalAmount = 500, isLocalPlayer = true, sourceGUID = "Player-1-ME" }
+SESSIONS = {
+  [1] = {
+    [9] = { combatSources = { { name = "Bob", classFilename = "ROGUE", deathTimeSeconds = 12, deathRecapID = 7 } } },
+    [10] = { combatSources = { { name = "Sdot", classFilename = "ROGUE", totalAmount = 900, deathTimeSeconds = 30, deathRecapID = 8, sourceDisplayType = 2, sourceGUID = SECRET } } },
+    [0] = { combatSources = { { name = "Ally", isLocalPlayer = false }, ME } },
+    [7] = { combatSources = { ME } },
+  },
+  [0] = { [9] = { combatSources = { { name = "Old1", deathTimeSeconds = 1 }, { name = "Old2", deathTimeSeconds = 2 } } } },
+}
+C_DamageMeter = {
+  IsDamageMeterAvailable = function() return true end,
+  GetAvailableCombatSessions = function() return { 1, 2 } end,
+  GetCombatSessionFromType = function(st, mt)
+    if IN_COMBAT then return SECRET end
+    return SESSIONS[st] and SESSIONS[st][mt]
+  end,
+  GetCombatSessionSourceFromType = function(st, mt, guid)
+    if mt == 0 then return { combatSpells = { { spellID = 35395, totalAmount = 300, overkillAmount = 120, isDeadly = true,
+      combatSpellDetails = { { unitName = "Sdot", unitClassFilename = "ROGUE", amount = 300 } } } } } end
+    return { combatSpells = { { spellID = 1752, totalAmount = 200, combatSpellDetails = { unitName = "Sdot", amount = 200 } } } }
+  end,
+}
+C_DeathRecap = { GetRecapEvents = function(id)
+  if id == 8 then return { { sourceName = "Me", spellName = "Crusader Strike", amount = 300, overkill = 120 } } end
+  return SECRET
+end }
+''')
+L.execute('NOW = 380; FIRE("PLAYER_REGEN_ENABLED")')
+t = text().split("METER DUMP (left combat)")[-1]
+check("leaving combat dumps the meter", "inCombat=false" in t and "sessions=2" in t, t[:200])
+check("Deaths: the entry with its death time and recap ID; a secret recap shown as SECRET",
+      "Bob class=ROGUE" in t and "deathTime=12 recapID=7" in t and "recap: SECRET" in t, t)
+check("EnemyDamageTaken: the enemy, secret GUID shown, and the recap's killing blow",
+      "Sdot class=ROGUE total=900" in t and "display=2 deathTime=30 recapID=8 guid=SECRET" in t
+      and "recap: 1 events; killing blow: source=Me spell=Crusader Strike amount=300 overkill=120" in t, t)
+check("Deaths/overall: the entries listed", "METER Deaths/overall: 2 entries" in t and "Old2" in t, t)
+check("DamageDone: only our own entry, then whom we hit, with deadly and overkill",
+      "Ally" not in t and "spell=35395 creature=nil total=300 overkill=120 deadly=true units: Sdot(ROGUE, 300)" in t, t)
+check("DamageTaken: a single unit detail is read too", "spell=1752" in t and "units: Sdot(nil, 200)" in t, t)
+
+n = len(lines())
+L.execute('NOW = 381; FIRE("PLAYER_REGEN_ENABLED")')
+check("dumps are at most every 3 seconds", len(lines()) == n)
+L.execute('NOW = 390; IN_COMBAT = true; FIRE("DAMAGE_METER_COMBAT_SESSION_UPDATED", 1, 2)')
+check("session updates in combat are logged, not dumped", lines()[-1].endswith("DAMAGE_METER_COMBAT_SESSION_UPDATED 1, 2"), lines()[-1])
+L.execute('NOW = 400; FIRE("PLAYER_REGEN_ENABLED")')
+check("a secret session is shown as SECRET", "METER Deaths/current: SECRET" in text(), lines()[-3:])
+L.execute('IN_COMBAT = false')
+L.execute('NOW = 401; for i = 1, 50 do FIRE("DAMAGE_METER_CURRENT_SESSION_UPDATED") end')
+check("current-session updates are counted, not logged one by one",
+      sum(1 for l in lines() if "DAMAGE_METER_CURRENT_SESSION_UPDATED" in l) == 1, [l for l in lines() if "CURRENT_SESSION" in l])
+L.execute('C_DamageMeter.GetCombatSessionFromType = function() error("nope") end; NOW = 420; FIRE("PLAYER_REGEN_ENABLED")')
+check("a failing meter call is logged, not raised", "METER Deaths/current: error: " in text(), lines()[-3:])
+L.execute('C_DamageMeter = nil; NOW = 430; FIRE("PLAYER_REGEN_ENABLED")')
+check("no damage meter: said once per dump", lines()[-1].endswith("METER (left combat): C_DamageMeter missing"), lines()[-1])
+
 # 5. Errors and secrets never stop the probe
 L.execute('UNITS = { target = { name = "X Y", level = 60 } }; UnitIsDeadOrGhost = function() error("boom") end')
 L.execute('NOW = 400; FIRE("PARTY_KILL", SECRET, SECRET); RUN_TIMERS(2)')

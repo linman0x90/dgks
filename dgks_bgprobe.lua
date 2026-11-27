@@ -15,12 +15,15 @@
 --   * a VERDICT line: ours or a groupmate's, and the victim if exactly one candidate died
 --   * every player nameplate that goes away (NAME_PLATE_UNIT_REMOVED): name, enemy, dead or alive
 --     then; the VERDICT lists the enemy plates that vanished dead from 1 s before the kill to 2 s after
+--   * Blizzard's damage meter (C_DamageMeter) each time we leave combat: the Deaths, EnemyDamageTaken,
+--     DamageDone and DamageTaken views (names, classes, death times, recap IDs), our own spell
+--     breakdowns (whom we hit, who hit us, deadly spells), and the Death Recap of each death listed
 -- It also keeps logging the scoreboard, statistics, honor and battleground chat, and our deaths.
 -- Only battlegrounds and arenas are logged (and where we are, everywhere).
 --
 -- /dgksprobe on       start logging (stays on across reloads until turned off)
 -- /dgksprobe off      stop logging
--- /dgksprobe snap     log the units around you now
+-- /dgksprobe snap     log the units around you and the damage meter now
 -- /dgksprobe status   say whether it is on and how many lines are logged
 -- /dgksprobe clear    empty the log
 --
@@ -355,6 +358,148 @@ for _, e in ipairs({ "CHAT_MSG_COMBAT_HONOR_GAIN", "CHAT_MSG_BG_SYSTEM_NEUTRAL",
 end
 function handlers.PLAYER_DEAD() log("PLAYER_DEAD"); checkScore("we died") end
 
+-- Damage meter (C_DamageMeter) -------------------------------------------------------------------
+-- Blizzard's meter keeps Deaths and EnemyDamageTaken views whose entries carry a name, class, death
+-- time and death recap ID, and spell breakdowns naming the other unit, with overkill and "deadly"
+-- flags. Its data is documented as secret in combat, so it is dumped when we leave combat: does it
+-- name our victims, and through each death's recap, their killers?
+
+-- A field of a table that may be secret, or nil
+local function field(t, k)
+	if t == nil or isSecret(t) or type(t) ~= "table" then return nil end
+	local ok, v = pcall(function() return t[k] end)
+	if ok then return v end
+end
+
+-- The items of an array that may be secret, as a plain list
+local function items(t)
+	local out = {}
+	if type(t) ~= "table" or isSecret(t) then return out end
+	pcall(function() for i, v in ipairs(t) do out[i] = v end end)
+	return out
+end
+
+local function meterType(name, fallback)
+	local enum = Enum and Enum.DamageMeterType
+	return enum and enum[name] or fallback
+end
+
+local function sessionType(name, fallback)
+	local enum = Enum and Enum.DamageMeterSessionType
+	return enum and enum[name] or fallback
+end
+
+local function sourceLine(src)
+	return ("%s class=%s total=%s local=%s display=%s deathTime=%s recapID=%s guid=%s"):format(
+		show(field(src, "name")), show(field(src, "classFilename")), show(field(src, "totalAmount")),
+		show(field(src, "isLocalPlayer")), show(field(src, "sourceDisplayType")), show(field(src, "deathTimeSeconds")),
+		show(field(src, "deathRecapID")), show(field(src, "sourceGUID")))
+end
+
+-- What the Death Recap says about one death: the killing blow (event 1) and how many events
+local function recapLine(id)
+	if not (C_DeathRecap and C_DeathRecap.GetRecapEvents) then return "no C_DeathRecap" end
+	local ok, events = pcall(C_DeathRecap.GetRecapEvents, id)
+	if not ok then return "error: " .. show(tostring(events)) end
+	if isSecret(events) then return "SECRET" end
+	if type(events) ~= "table" then return show(events) end
+	local list = items(events)
+	local ev = list[1]
+	return ("%d events; killing blow: source=%s spell=%s amount=%s overkill=%s hideCaster=%s"):format(#list,
+		show(field(ev, "sourceName")), show(field(ev, "spellName")), show(field(ev, "amount")),
+		show(field(ev, "overkill")), show(field(ev, "hideCaster")))
+end
+
+-- One view of one session. keep(src, i) decides which entries get a line; recaps adds each death's recap.
+local function dumpSession(label, sType, mType, keep, recaps)
+	local ok, session = pcall(C_DamageMeter.GetCombatSessionFromType, sType, mType)
+	if not ok then log("METER %s: error: %s", label, show(tostring(session))) return {} end
+	if isSecret(session) or session == nil then log("METER %s: %s", label, show(session)) return {} end
+	local sources = items(field(session, "combatSources"))
+	log("METER %s: %d entries, total=%s duration=%s", label, #sources, show(field(session, "totalAmount")),
+		show(field(session, "durationSeconds")))
+	for i, src in ipairs(sources) do
+		if keep(src, i) then
+			log("  %s", sourceLine(src))
+			local id = field(src, "deathRecapID")
+			if recaps and id ~= nil and not isSecret(id) then log("    recap: %s", recapLine(id)) end
+		end
+	end
+	return sources
+end
+
+-- Our own spell breakdown in one view: whom we hit (DamageDone) or who hit us (DamageTaken)
+local function dumpOwnSpells(label, sType, mType, sources)
+	local guid
+	for _, src in ipairs(sources) do
+		if field(src, "isLocalPlayer") == true then guid = field(src, "sourceGUID") end
+	end
+	if guid == nil or isSecret(guid) then guid = UnitGUID("player") end
+	local ok, source = pcall(C_DamageMeter.GetCombatSessionSourceFromType, sType, mType, guid)
+	if not ok then log("METER %s spells: error: %s", label, show(tostring(source))) return end
+	if isSecret(source) or source == nil then log("METER %s spells: %s", label, show(source)) return end
+	local spells = items(field(source, "combatSpells"))
+	log("METER %s spells: %d", label, #spells)
+	for i, spell in ipairs(spells) do
+		if i > 8 then break end
+		local details, units = field(spell, "combatSpellDetails"), {}
+		-- One unit or a list of them
+		local list = field(details, "unitName") ~= nil and { details } or items(details)
+		for j, d in ipairs(list) do
+			if j > 5 then break end
+			units[#units + 1] = ("%s(%s, %s)"):format(show(field(d, "unitName")), show(field(d, "unitClassFilename")), show(field(d, "amount")))
+		end
+		log("    spell=%s creature=%s total=%s overkill=%s deadly=%s units: %s", show(field(spell, "spellID")),
+			show(field(spell, "creatureName")), show(field(spell, "totalAmount")), show(field(spell, "overkillAmount")),
+			show(field(spell, "isDeadly")), #units > 0 and table.concat(units, ", ") or "none")
+	end
+end
+
+local meterDumpAt = -100
+local function dumpMeter(reason)
+	if type(C_DamageMeter) ~= "table" then log("METER (%s): C_DamageMeter missing", reason) return end
+	if GetTime() - meterDumpAt < 3 then return end
+	meterDumpAt = GetTime()
+	log("METER DUMP (%s) available=%s inCombat=%s sessions=%s", reason, try(C_DamageMeter.IsDamageMeterAvailable),
+		try(InCombatLockdown), try(function() return #C_DamageMeter.GetAvailableCombatSessions() end))
+	local current, overall = sessionType("Current", 1), sessionType("Overall", 0)
+	local all = function() return true end
+	dumpSession("Deaths/current", current, meterType("Deaths", 9), all, true)
+	-- The whole battleground's deaths: the last 10 entries only, without recaps
+	local deaths = dumpSession("Deaths/overall", overall, meterType("Deaths", 9), function() return false end)
+	for i = math.max(1, #deaths - 9), #deaths do log("  %s", sourceLine(deaths[i])) end
+	dumpSession("EnemyDamageTaken/current", current, meterType("EnemyDamageTaken", 10), function(src, i)
+		return i <= 10 or field(src, "deathTimeSeconds") ~= nil
+	end, true)
+	local done = dumpSession("DamageDone/current", current, meterType("DamageDone", 0), function(src)
+		return field(src, "isLocalPlayer") == true
+	end)
+	dumpOwnSpells("DamageDone/current", current, meterType("DamageDone", 0), done)
+	local taken = dumpSession("DamageTaken/current", current, meterType("DamageTaken", 7), function(src)
+		return field(src, "isLocalPlayer") == true
+	end)
+	dumpOwnSpells("DamageTaken/current", current, meterType("DamageTaken", 7), taken)
+end
+
+function handlers.PLAYER_REGEN_ENABLED() dumpMeter("left combat") end
+
+function handlers.DAMAGE_METER_COMBAT_SESSION_UPDATED(...)
+	log("DAMAGE_METER_COMBAT_SESSION_UPDATED %s", try(function(...) return ... end, ...))
+	if readable(InCombatLockdown) == false then dumpMeter("session updated, out of combat") end
+end
+
+-- Fires on every update while fighting: only count them, and log the count now and then
+local currentUpdates, currentLoggedAt = 0, 0
+function handlers.DAMAGE_METER_CURRENT_SESSION_UPDATED()
+	currentUpdates = currentUpdates + 1
+	if GetTime() - currentLoggedAt >= 30 then
+		log("DAMAGE_METER_CURRENT_SESSION_UPDATED x%d", currentUpdates)
+		currentUpdates, currentLoggedAt = 0, GetTime()
+	end
+end
+
+function handlers.DAMAGE_METER_RESET() log("DAMAGE_METER_RESET") end
+
 -- Outside battlegrounds and arenas only where we are is logged, so the log keeps room for the fights
 local ALWAYS = { PLAYER_ENTERING_WORLD = true, ZONE_CHANGED_NEW_AREA = true }
 
@@ -417,7 +562,9 @@ SlashCmdList.DGKSPROBE = function(msg)
 		snapshot("manual")
 		checkScore("manual")
 		checkStats("manual")
-		say("logged the units around you, the scoreboard and the statistics")
+		meterDumpAt = -100
+		dumpMeter("manual")
+		say("logged the units around you, the scoreboard, the statistics and the damage meter")
 	elseif cmd == "clear" then
 		wipe(state.log)
 		last = {}
