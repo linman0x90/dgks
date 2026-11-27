@@ -144,6 +144,24 @@ check("a rise seen just before PARTY_KILL still counts as ours", "VERDICT kill #
 L.execute('UNITS = {}; NOW = 300; BGKB = 3; FIRE("PARTY_KILL", SECRET, SECRET); RUN_TIMERS(2)')
 check("no enemies around: logged as such", "enemies: none" in text() and "kill #4: BG KB 2 -> 3 (OURS) | no enemy players around" in text(), text())
 
+# 6. Nameplates: a dead enemy's plate going away names the victim, even with nobody targeted
+L.execute('''UNITS = { nameplate7 = { name = "Sdot", level = 59 } }
+NOW = 350; BGKB = 4; FIRE("PARTY_KILL", SECRET, SECRET)
+NOW = 350.1; UNITS.nameplate7.dead = true; FIRE("NAME_PLATE_UNIT_REMOVED", "nameplate7"); UNITS.nameplate7 = nil
+UNITS.nameplate8 = { name = "Walker", level = 60 }; FIRE("NAME_PLATE_UNIT_REMOVED", "nameplate8"); UNITS.nameplate8 = nil
+UNITS.nameplate9 = { name = "Ally", level = 60, friend = true, dead = true }; FIRE("NAME_PLATE_UNIT_REMOVED", "nameplate9")
+NOW = 350; RUN_TIMERS(2)''')
+t = text()
+check("a player plate going away is logged with dead or alive",
+      "PLATE GONE nameplate7 name=Sdot player=true enemy=true dead=true" in t and "PLATE GONE nameplate8 name=Walker player=true enemy=true dead=false" in t, t)
+check("verdict lists only enemy plates that vanished dead, timed from the kill", "VERDICT kill #5: OURS" in t and "plates gone dead: Sdot(+0.10s)" in t
+      and "Walker(" not in t.split("VERDICT kill #5")[1] and "Ally(" not in t.split("VERDICT kill #5")[1], t.split("VERDICT kill #5")[1][:200])
+check("the player is told the victim from the plate", any("your kill #5: Sdot (plate)" in str(p) for p in L.eval("PRINTED").values()))
+L.execute('UNITS = { nameplate2 = { name = "Npc" } }; UnitIsPlayer = function(u) return false end; FIRE("NAME_PLATE_UNIT_REMOVED", "nameplate2")')
+check("NPC plates are not logged", "name=Npc" not in text())
+L.execute('UnitIsPlayer = function(u) return UNITS[u] ~= nil end; FIRE("NAME_PLATE_UNIT_REMOVED", SECRET)')
+check("a secret unit token is logged, not raised", lines()[-1].endswith("PLATE GONE unit=SECRET"), lines()[-1])
+
 # 5. Errors and secrets never stop the probe
 L.execute('UNITS = { target = { name = "X Y", level = 60 } }; UnitIsDeadOrGhost = function() error("boom") end')
 L.execute('NOW = 400; FIRE("PARTY_KILL", SECRET, SECRET); RUN_TIMERS(2)')
@@ -155,7 +173,7 @@ check("a secret scoreboard is shown as SECRET", "kb=SECRET" in text(), text())
 L.execute('FIRE("CHAT_MSG_COMBAT_HONOR_GAIN", "You have been awarded 15 Honor.")')
 check("honor chat logged", lines()[-1].endswith("CHAT_MSG_COMBAT_HONOR_GAIN You have been awarded 15 Honor."), lines()[-1])
 
-# 6. Outside battlegrounds and arenas only where we are is logged
+# 7. Outside battlegrounds and arenas only where we are is logged
 L.execute('INSTANCE = "party"')
 n = len(lines())
 L.execute('FIRE("PARTY_KILL", SECRET, SECRET); FIRE("CHAT_MSG_COMBAT_HONOR_GAIN", "x"); FIRE("PLAYER_DEAD")')

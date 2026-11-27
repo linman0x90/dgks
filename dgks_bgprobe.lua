@@ -13,6 +13,8 @@
 --   * the enemy players around us then, and at +0.25, 0.5, 1 and 2 seconds which of them is dead,
 --     to see whether the victim can be named
 --   * a VERDICT line: ours or a groupmate's, and the victim if exactly one candidate died
+--   * every player nameplate that goes away (NAME_PLATE_UNIT_REMOVED): name, enemy, dead or alive
+--     then; the VERDICT lists the enemy plates that vanished dead from 1 s before the kill to 2 s after
 -- It also keeps logging the scoreboard, statistics, honor and battleground chat, and our deaths.
 -- Only battlegrounds and arenas are logged (and where we are, everywhere).
 --
@@ -235,6 +237,38 @@ end
 -- Dead or alive, read again after a delay: is the unit still the same player, and dead now?
 local FOLLOW_UPS = { 0.25, 0.5, 1, 2 }
 
+-- Player nameplates that went away, newest last: { t, name, enemy, dead }. A dead player's plate
+-- should vanish, and the unit can still be asked about while NAME_PLATE_UNIT_REMOVED runs, so this
+-- may confirm the victim better than our target, which no longer shows them a moment later.
+local plates = {}
+local PLATE_WINDOW = 1 -- seconds before a kill a plate may have gone and still count
+
+function handlers.NAME_PLATE_UNIT_REMOVED(unit)
+	if isSecret(unit) or type(unit) ~= "string" then log("PLATE GONE unit=%s", show(unit)) return end
+	local ok, isPlayer = pcall(UnitIsPlayer, unit)
+	if ok and isPlayer == false then return end -- NPCs: too many in a battleground
+	local name = readable(UnitName, unit)
+	local enemy = readable(UnitCanAttack, "player", unit)
+	local dead = readable(UnitIsDeadOrGhost, unit)
+	log("PLATE GONE %s name=%s player=%s enemy=%s dead=%s deadOrGhost=%s health=%s", unit, try(UnitName, unit),
+		show(isPlayer), try(UnitCanAttack, "player", unit), try(UnitIsDead, unit), try(UnitIsDeadOrGhost, unit), try(UnitHealth, unit))
+	if type(name) == "string" then
+		plates[#plates + 1] = { t = GetTime(), name = name, enemy = enemy, dead = dead == true }
+		if #plates > 60 then table.remove(plates, 1) end
+	end
+end
+
+-- Enemy plates that vanished dead around a kill: "Name(+0.12s)" relative to the PARTY_KILL
+local function deadPlates(kill)
+	local found = {}
+	for _, p in ipairs(plates) do
+		if p.dead and p.enemy ~= false and p.t >= kill.t - PLATE_WINDOW and p.t <= kill.t + FOLLOW_UPS[#FOLLOW_UPS] then
+			found[#found + 1] = { name = p.name, text = ("%s(%+.2fs)"):format(p.name, p.t - kill.t) }
+		end
+	end
+	return found
+end
+
 local function followUp(kill, delay)
 	local parts = {}
 	for _, c in ipairs(kill.candidates) do
@@ -259,9 +293,13 @@ local function followUp(kill, delay)
 	if delay == FOLLOW_UPS[#FOLLOW_UPS] then
 		local dead = {}
 		for _, p in ipairs(parts) do if p:find("=DEAD") then dead[#dead + 1] = p:match("^(.-)=") end end
-		log("  VERDICT kill #%d: %s, victim %s", kill.n, ours and "OURS" or "a groupmate's",
-			#dead == 1 and dead[1] or #dead == 0 and "not seen dead" or ("one of " .. table.concat(dead, "/")))
-		if ours then say(("your kill #%d: %s"):format(kill.n, #dead == 1 and dead[1] or "victim unclear")) end
+		local gone, goneText = deadPlates(kill), {}
+		for _, p in ipairs(gone) do goneText[#goneText + 1] = p.text end
+		log("  VERDICT kill #%d: %s, victim %s | plates gone dead: %s", kill.n, ours and "OURS" or "a groupmate's",
+			#dead == 1 and dead[1] or #dead == 0 and "not seen dead" or ("one of " .. table.concat(dead, "/")),
+			#goneText > 0 and table.concat(goneText, ", ") or "none")
+		local victim = #dead == 1 and dead[1] or #gone == 1 and (gone[1].name .. " (plate)") or "victim unclear"
+		if ours then say(("your kill #%d: %s"):format(kill.n, victim)) end
 	end
 end
 
@@ -273,7 +311,7 @@ function handlers.PARTY_KILL(attacker, victim)
 	local kbBefore = last.kbStat
 	if kbBefore and last.kbRiseAt and GetTime() - last.kbRiseAt < 0.5 then kbBefore = kbBefore - 1 end
 	local candidates = enemyPlayers()
-	local kill = { n = killCount, kbBefore = kbBefore, candidates = candidates, names = {} }
+	local kill = { n = killCount, t = GetTime(), kbBefore = kbBefore, candidates = candidates, names = {} }
 	local list = {}
 	for _, c in ipairs(candidates) do
 		kill.names[c.name] = true
