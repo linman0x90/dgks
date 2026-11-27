@@ -3,12 +3,18 @@
 --
 -- Kills in battlegrounds are missed on retail and Forever because PARTY_KILL hands addons secret
 -- GUIDs there. This probe records which other signals still reach addon code, readable or secret,
--- so we can pick a way to capture battleground kills:
---   * PARTY_KILL itself: does it fire, and what can be done with its secret GUIDs
---   * the scoreboard's killing-blow count (C_PvP.GetScoreInfoByPlayerGuid, GetBattlefieldScore)
---   * the PvP session stats and the Killing blows / Honorable kills statistics
---   * honor and battleground chat messages
---   * the units around you at the moment of a kill: names, levels, dead or alive, health
+-- so we can pick a way to capture battleground kills.
+--
+-- The first run (Forever, Alterac Valley) found: PARTY_KILL fires with secret GUIDs; the Battleground
+-- Killing Blows statistic is readable and rises in the same instant when the kill is ours; enemy names
+-- and levels are readable; the scoreboard is secret until the battle ends. So for each PARTY_KILL this
+-- version logs:
+--   * whether it was ours: did Battleground Killing Blows rise
+--   * the enemy players around us then, and at +0.25, 0.5, 1 and 2 seconds which of them is dead,
+--     to see whether the victim can be named
+--   * a VERDICT line: ours or a groupmate's, and the victim if exactly one candidate died
+-- It also keeps logging the scoreboard, statistics, honor and battleground chat, and our deaths.
+-- Only battlegrounds and arenas are logged (and where we are, everywhere).
 --
 -- /dgksprobe on       start logging (stays on across reloads until turned off)
 -- /dgksprobe off      stop logging
@@ -19,7 +25,7 @@
 -- The log is saved in dgksDB (WTF\Account\<account>\SavedVariables\dgks.lua, under global.bgprobe)
 -- when you log out or /reload, so it can be read after a battleground.
 
-local MAX_LINES = 2000
+local MAX_LINES = 5000
 local SCORE_INTERVAL = 3 -- seconds between scoreboard requests in a battleground
 
 local function isSecret(v)
@@ -151,39 +157,33 @@ local function checkScore(reason)
 	end
 end
 
--- Statistics whose names mention killing blows or honorable kills, found by name once
-local stats
+-- The statistics the first run found readable in a battleground (ids from that log)
+local KB_STAT = 1491 -- Battleground Killing Blows
+local STATS = {
+	{ id = 1487, name = "Total KB" }, { id = 1488, name = "World KB" }, { id = KB_STAT, name = "BG KB" },
+	{ id = 588, name = "Total HK" }, { id = 382, name = "BG HK" },
+}
 
-local function findStats()
-	stats = {}
-	local ok, cats = pcall(GetStatisticsCategoryList)
-	if not ok or type(cats) ~= "table" then
-		log("STATS: GetStatisticsCategoryList %s", ok and show(cats) or ("error: " .. show(tostring(cats))))
-		return
-	end
-	for _, cat in ipairs(cats) do
-		local n = readable(GetCategoryNumAchievements, cat) or 0
-		for i = 1, n do
-			local id, name = select(2, pcall(GetAchievementInfo, cat, i))
-			if type(name) == "string" and not isSecret(name)
-				and (name:find("[Kk]illing [Bb]low") or name:find("[Hh]onorable [Kk]ill")) then
-				stats[#stats + 1] = { id = id, name = name }
-			end
-		end
-	end
-	log("STATS: %d found", #stats)
+-- A statistic as a number: GetStatistic returns text, "--" before the first one
+local function statValue(id)
+	local v = readable(GetStatistic, id)
+	if type(v) == "string" then return tonumber(v:match("^%d+")) or 0 end
+	return type(v) == "number" and v or nil
 end
 
 local function checkStats(reason)
-	if not stats then findStats() end
 	local parts = {}
-	for _, s in ipairs(stats) do parts[#parts + 1] = ("%s [%s]=%s"):format(s.name, show(s.id), try(GetStatistic, s.id)) end
+	for _, s in ipairs(STATS) do parts[#parts + 1] = ("%s=%s"):format(s.name, show(statValue(s.id))) end
 	parts[#parts + 1] = "session=" .. try(GetPVPSessionStats)
-	local line = table.concat(parts, "; ")
+	local line = table.concat(parts, " ")
 	if line ~= last.stats then
 		log("STATS (%s) %s", reason, line)
 		last.stats = line
 	end
+	-- A rise in battleground killing blows, with the time it was seen
+	local kb = statValue(KB_STAT)
+	if kb and last.kbStat and kb > last.kbStat then last.kbRiseAt = GetTime() end
+	if kb then last.kbStat = kb end
 end
 
 -- Events ------------------------------------------------------------------------------------------
@@ -213,18 +213,83 @@ end
 function handlers.PLAYER_ENTERING_WORLD() last = {}; where("entering world") end
 function handlers.ZONE_CHANGED_NEW_AREA() where("zone change") end
 
+-- Enemy players around us right now, by unit: { unit, name, level }. The first run found names and
+-- levels readable in a battleground, and the victim usually our target or soft target.
+local CANDIDATE_UNITS = { "target", "softenemy", "focus", "mouseover" }
+for i = 1, 40 do CANDIDATE_UNITS[#CANDIDATE_UNITS + 1] = "nameplate" .. i end
+
+local function enemyPlayers()
+	local found, seen = {}, {}
+	for _, unit in ipairs(CANDIDATE_UNITS) do
+		if readable(UnitExists, unit) and readable(UnitIsPlayer, unit) and readable(UnitCanAttack, "player", unit) then
+			local name = readable(UnitName, unit)
+			if type(name) == "string" and not seen[name] then
+				seen[name] = true
+				found[#found + 1] = { unit = unit, name = name, level = readable(UnitLevel, unit) }
+			end
+		end
+	end
+	return found
+end
+
+-- Dead or alive, read again after a delay: is the unit still the same player, and dead now?
+local FOLLOW_UPS = { 0.25, 0.5, 1, 2 }
+
+local function followUp(kill, delay)
+	local parts = {}
+	for _, c in ipairs(kill.candidates) do
+		local name = readable(UnitName, c.unit)
+		if name ~= c.name then
+			parts[#parts + 1] = c.name .. "=gone"
+		else
+			parts[#parts + 1] = ("%s=%s"):format(c.name, (readable(UnitIsDeadOrGhost, c.unit) == true) and "DEAD"
+				or ("alive(" .. try(UnitIsDeadOrGhost, c.unit) .. ")"))
+		end
+	end
+	-- Anyone dead now who was not a candidate?
+	for _, e in ipairs(enemyPlayers()) do
+		if readable(UnitIsDeadOrGhost, e.unit) == true and not kill.names[e.name] then
+			parts[#parts + 1] = e.name .. "=DEAD(new, " .. e.unit .. ")"
+		end
+	end
+	local kb = statValue(KB_STAT)
+	local ours = kb and kill.kbBefore and kb > kill.kbBefore
+	log("  +%.2fs kill #%d: BG KB %s -> %s (%s) | %s", delay, kill.n, show(kill.kbBefore), show(kb),
+		ours and "OURS" or "not ours", #parts > 0 and table.concat(parts, ", ") or "no enemy players around")
+	if delay == FOLLOW_UPS[#FOLLOW_UPS] then
+		local dead = {}
+		for _, p in ipairs(parts) do if p:find("=DEAD") then dead[#dead + 1] = p:match("^(.-)=") end end
+		log("  VERDICT kill #%d: %s, victim %s", kill.n, ours and "OURS" or "a groupmate's",
+			#dead == 1 and dead[1] or #dead == 0 and "not seen dead" or ("one of " .. table.concat(dead, "/")))
+		if ours then say(("your kill #%d: %s"):format(kill.n, #dead == 1 and dead[1] or "victim unclear")) end
+	end
+end
+
+local killCount = 0
 function handlers.PARTY_KILL(attacker, victim)
-	log("PARTY_KILL attacker=%s victim=%s", show(attacker), show(victim))
-	-- What can be done with the GUIDs when they are secret?
-	local me = UnitGUID("player")
-	log("  attacker==me: %s", try(function() return attacker == me end))
-	log("  UnitNameFromGUID(victim)=%s  GetPlayerInfoByGUID(victim)=%s", try(UnitNameFromGUID, victim), try(GetPlayerInfoByGUID, victim))
-	log("  UnitTokenFromGUID(victim)=%s  UnitTokenFromGUID(attacker)=%s", try(UnitTokenFromGUID, victim), try(UnitTokenFromGUID, attacker))
-	log("  GUIDIsPlayer(victim)=%s  IsGUIDInGroup(attacker)=%s", C_PlayerInfo and try(C_PlayerInfo.GUIDIsPlayer, victim) or "missing",
-		try(IsGUIDInGroup, attacker))
-	say("PARTY_KILL" .. ((isSecret(attacker) or isSecret(victim)) and " (secret GUIDs)" or ""))
-	snapshot("PARTY_KILL")
+	killCount = killCount + 1
+	-- The statistic before this kill: the last value seen, unless it rose in the last half second
+	-- (CRITERIA_UPDATE may have been handled first), in which case one less
+	local kbBefore = last.kbStat
+	if kbBefore and last.kbRiseAt and GetTime() - last.kbRiseAt < 0.5 then kbBefore = kbBefore - 1 end
+	local candidates = enemyPlayers()
+	local kill = { n = killCount, kbBefore = kbBefore, candidates = candidates, names = {} }
+	local list = {}
+	for _, c in ipairs(candidates) do
+		kill.names[c.name] = true
+		list[#list + 1] = ("%s %s (%s)"):format(show(c.level), c.name, c.unit)
+	end
+	log("PARTY_KILL #%d attacker=%s victim=%s | BG KB now %s | enemies: %s", killCount, show(attacker), show(victim),
+		show(statValue(KB_STAT)), #list > 0 and table.concat(list, ", ") or "none")
 	checkStats("PARTY_KILL")
+	-- A rise belongs to one kill: this one, if any, so the next PARTY_KILL cannot claim it too
+	last.kbRiseAt = nil
+	for _, delay in ipairs(FOLLOW_UPS) do
+		C_Timer.After(delay, function()
+			local ok, err = pcall(followUp, kill, delay)
+			if not ok then log("ERROR in follow-up: %s", show(tostring(err))) end
+		end)
+	end
 	pcall(RequestBattlefieldScoreData)
 end
 
@@ -250,16 +315,14 @@ for _, e in ipairs({ "CHAT_MSG_COMBAT_HONOR_GAIN", "CHAT_MSG_BG_SYSTEM_NEUTRAL",
 	"CHAT_MSG_BG_SYSTEM_HORDE", "CHAT_MSG_COMBAT_XP_GAIN" }) do
 	handlers[e] = chat(e)
 end
-local honorChat = handlers.CHAT_MSG_COMBAT_HONOR_GAIN
-handlers.CHAT_MSG_COMBAT_HONOR_GAIN = function(msg)
-	honorChat(msg)
-	snapshot("honor gain")
-end
-
 function handlers.PLAYER_DEAD() log("PLAYER_DEAD"); checkScore("we died") end
+
+-- Outside battlegrounds and arenas only where we are is logged, so the log keeps room for the fights
+local ALWAYS = { PLAYER_ENTERING_WORLD = true, ZONE_CHANGED_NEW_AREA = true }
 
 frame:SetScript("OnEvent", function(_, event, ...)
 	if not state or not state.on or not handlers[event] then return end
+	if not ALWAYS[event] and not inPvPInstance() then return end
 	local ok, err = pcall(handlers[event], ...)
 	if not ok then log("ERROR in %s: %s", event, show(tostring(err))) end
 end)

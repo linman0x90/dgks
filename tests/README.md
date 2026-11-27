@@ -38,7 +38,7 @@ They work from any folder. Each test prints PASS or FAIL for each check and exit
 | `test_options.py` | The options: what is registered and the order of the Settings tabs |
 | `test_minimap.py` | The minimap button: position, clicks, dragging and tooltip |
 | `test_recap_window.py` | The death recap: rows, times, crits, school and health colours, the killing-blow row and the Compact view |
-| `test_bgprobe.py` | The battleground probe (development copies only): it logs PARTY_KILL with secret GUIDs, scoreboard killing blows, statistics and the units around you, and never stops on an error |
+| `test_bgprobe.py` | The battleground probe (development copies only): whether each PARTY_KILL with secret GUIDs was ours, from the Battleground Killing Blows statistic; which enemy player around us died; logging only in battlegrounds and arenas; never stopping on an error |
 | `test_recap_close.py` | The death recap closes when you're alive again, but not when you release to a ghost |
 
 `names_prelude.py` loads dgks.lua's name helpers into tests that load a single module without dgks.lua.

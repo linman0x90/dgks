@@ -1,6 +1,7 @@
-"""The battleground probe (dgks_bgprobe.lua, development copies only): it loads, logs PARTY_KILL with
-secret GUIDs, notices a rise in the scoreboard's killing blows, snapshots the units around us, and
-never stops on an error.
+"""The battleground probe (dgks_bgprobe.lua, development copies only): for each PARTY_KILL with secret
+GUIDs it decides from the Battleground Killing Blows statistic whether the kill was ours, follows the
+enemy players around us to see which one died, logs only in battlegrounds and arenas, and never stops
+on an error.
 
 Needs Python 3 and lupa (pip install lupa). Run from anywhere:
 
@@ -49,36 +50,45 @@ CreateFrame = function()
   return f
 end
 function FIRE(event, ...) for _, f in ipairs(FRAMES) do if f.events[event] and f.onEvent then f.onEvent(f, event, ...) end end end
-C_Timer = { NewTicker = function(_, fn) TICK = fn return {} end }
-IsInInstance = function() return true, "pvp" end
-GetRealZoneText = function() return "Warsong Gulch" end
-C_PvP = { IsBattleground = function() return true end }
-KB = 0
-C_PvP.GetScoreInfoByPlayerGuid = function() return { killingBlows = KB, honorableKills = KB, deaths = 0, name = "Me" } end
-GetNumBattlefieldScores = function() return 1 end
-GetBattlefieldScore = function() return "Me", KB, KB, 0 end
+TIMERS = {}
+C_Timer = {
+  NewTicker = function(_, fn) TICK = fn return {} end,
+  After = function(d, fn) TIMERS[#TIMERS + 1] = { d = d, fn = fn } end,
+}
+-- Runs the timers due by `upto` seconds, in order
+function RUN_TIMERS(upto)
+  table.sort(TIMERS, function(a, b) return a.d < b.d end)
+  local left = {}
+  for _, t in ipairs(TIMERS) do if t.d <= upto then t.fn() else left[#left + 1] = t end end
+  TIMERS = left
+end
+INSTANCE = "pvp"
+IsInInstance = function() return INSTANCE ~= "none", INSTANCE end
+GetRealZoneText = function() return "Alterac Valley" end
+C_PvP = { IsBattleground = function() return true end,
+  GetScoreInfoByPlayerGuid = function() return { killingBlows = SECRET, honorableKills = SECRET, deaths = SECRET, name = "Me" } end }
+GetNumBattlefieldScores = function() return 0 end
+GetBattlefieldScore = function() end
 REQUESTS = 0
 RequestBattlefieldScoreData = function() REQUESTS = REQUESTS + 1 end
 UnitGUID = function(u) if u == "player" then return "Player-1-ME" end return SECRET end
-UnitName = function(u) if u == "player" then return "Me" end return SECRET end
-UNITS = { target = true, nameplate3 = true }
-UnitExists = function(u) return UNITS[u] == true end
-UnitIsPlayer = function(u) return true end
-UnitCanAttack = function() return true end
-UnitLevel = function() return 80 end
-UnitIsDead = function() return SECRET end
-UnitIsDeadOrGhost = function() return true end
-UnitHealth = function() error("no health for you") end
-UnitHealthMax = function() return 1000 end
+-- Enemy players by unit; dead ones have dead = true
+UNITS = {}
+local function U(u) return UNITS[u] end
+UnitExists = function(u) return U(u) ~= nil end
+UnitIsPlayer = function(u) return U(u) ~= nil end
+UnitCanAttack = function(_, u) return U(u) ~= nil and not U(u).friend end
+UnitName = function(u) if u == "player" then return "Me" end return U(u) and U(u).name end
+UnitLevel = function(u) return U(u) and U(u).level end
+UnitIsDeadOrGhost = function(u) return U(u) ~= nil and U(u).dead == true end
+UnitIsDead = UnitIsDeadOrGhost
+UnitHealth = function() return SECRET end
+UnitHealthMax = function() return SECRET end
 UnitIsUnit = function() return SECRET end
-UnitNameFromGUID = function() return SECRET end
-GetPlayerInfoByGUID = function() error("secret argument") end
-GetStatisticsCategoryList = function() return { 1 } end
-GetCategoryNumAchievements = function() return 2 end
-GetAchievementInfo = function(_, i) if i == 1 then return 1491, "Total Killing Blows" end return 9, "Fish caught" end
-GetStatistic = function(id) return tostring(KB) end
-GetPVPSessionStats = function() return KB, 0 end
-GetBuildInfo = function() return "12.0.1" end
+BGKB = 0
+GetStatistic = function(id) if id == 1491 then return BGKB == 0 and "--" or tostring(BGKB) end return "7" end
+GetPVPSessionStats = function() return 0, 0 end
+GetBuildInfo = function() return "1.15.8" end
 SlashCmdList = {}
 dgks = { db = { global = {} } }
 ''')
@@ -87,46 +97,76 @@ L.execute('FIRE("PLAYER_LOGIN")')
 probe = L.eval("SlashCmdList.DGKSPROBE")
 state = lambda: L.eval("dgks.db.global.bgprobe")
 lines = lambda: list(state()["log"].values())
+text = lambda: "\n".join(lines())
 
 check("off by default, nothing logged", state()["on"] is False and len(lines()) == 0)
 L.execute('FIRE("PARTY_KILL", SECRET, SECRET)')
 check("events are ignored while off", len(lines()) == 0)
 
 probe("on")
-text = "\n".join(lines())
-check("on: build and where we are logged", "PROBE ON (12.0.1" in text and "instance=pvp zone=Warsong Gulch" in text, text)
+check("on: build and where we are logged", "PROBE ON (1.15.8" in text() and "instance=pvp zone=Alterac Valley" in text(), text())
 check("the combat log's registration is never touched (a protected action)", L.eval("FORBIDDEN") is None)
-check("the Killing blows statistic is found by name", "Total Killing Blows [1491]=0" in text and "Fish" not in text, text)
+check("entering: the statistics are read ('--' counts as 0)", "BG KB=0" in text(), text())
 
-L.execute('FIRE("PARTY_KILL", SECRET, SECRET)')
-text = "\n".join(lines())
-check("PARTY_KILL with secret GUIDs logged, with what each lookup returned",
-      "PARTY_KILL attacker=SECRET victim=SECRET" in text and "UnitNameFromGUID(victim)=SECRET" in text
-      and "GetPlayerInfoByGUID(victim)=error" in text, text)
-check("snapshot lists the player units with secret and failing checks shown",
-      "target: exists=true" in text and "nameplate3:" in text and "dead=SECRET" in text
-      and "health=error" in text and "2 player units" in text, text)
+# 1. Our kill: the statistic rises with PARTY_KILL, and our target dies a moment later
+L.execute('''UNITS = { target = { name = "Moocifer Mooningstar", level = 60 }, nameplate2 = { name = "Big Jub", level = 58 },
+  nameplate3 = { name = "Friend Ly", level = 60, friend = true } }
+BGKB = 1; FIRE("PARTY_KILL", SECRET, SECRET)''')
+t = text()
+check("PARTY_KILL lists the enemy players around us with levels, not friends",
+      "PARTY_KILL #1 attacker=SECRET victim=SECRET | BG KB now 1 | enemies: 60 Moocifer Mooningstar (target), 58 Big Jub (nameplate2)" in t
+      and "Friend Ly" not in t, t)
+L.execute('RUN_TIMERS(0.25)')
+check("+0.25s: still alive, already known to be ours", "+0.25s kill #1: BG KB 0 -> 1 (OURS) | Moocifer Mooningstar=alive(false), Big Jub=alive(false)" in text(), lines()[-1])
+L.execute('UNITS.target.dead = true; RUN_TIMERS(2)')
+t = text()
+check("+0.5s on: the victim shows dead", "+0.50s kill #1: BG KB 0 -> 1 (OURS) | Moocifer Mooningstar=DEAD, Big Jub=alive(false)" in t, t)
+check("verdict: ours, victim named", "VERDICT kill #1: OURS, victim Moocifer Mooningstar" in t, t)
+check("the player is told", any("your kill #1: Moocifer Mooningstar" in str(p) for p in L.eval("PRINTED").values()))
 
+# 2. A groupmate's kill: the statistic does not move; the victim was a nameplate that changed
+L.execute('''UNITS = { target = { name = "Saint Grissom", level = 60 } }
+FIRE("PARTY_KILL", SECRET, SECRET)
+UNITS.target = { name = "Someone Else", level = 60 }
+UNITS.nameplate4 = { name = "Zagg Brokenbow", level = 60, dead = true }
+RUN_TIMERS(2)''')
+t = text()
+check("not ours when the statistic does not rise", "+2.00s kill #2: BG KB 1 -> 1 (not ours)" in t, t)
+check("a target that changed is 'gone'; a new dead enemy is noticed", "Saint Grissom=gone" in t and "Zagg Brokenbow=DEAD(new, nameplate4)" in t, t)
+check("verdict: a groupmate's", "VERDICT kill #2: a groupmate's, victim Zagg Brokenbow" in t, t)
+
+# 3. The statistic rose just before PARTY_KILL arrived (CRITERIA_UPDATE handled first): still ours
+L.execute('''UNITS = { target = { name = "Chain Lightning", level = 60 } }
+NOW = 200; BGKB = 2; FIRE("CRITERIA_UPDATE"); FIRE("PARTY_KILL", SECRET, SECRET); RUN_TIMERS(2)''')
+check("a rise seen just before PARTY_KILL still counts as ours", "VERDICT kill #3: OURS, victim not seen dead" in text(), text())
+
+# 4. Nobody around
+L.execute('UNITS = {}; NOW = 300; BGKB = 3; FIRE("PARTY_KILL", SECRET, SECRET); RUN_TIMERS(2)')
+check("no enemies around: logged as such", "enemies: none" in text() and "kill #4: BG KB 2 -> 3 (OURS) | no enemy players around" in text(), text())
+
+# 5. Errors and secrets never stop the probe
+L.execute('UNITS = { target = { name = "X Y", level = 60 } }; UnitIsDeadOrGhost = function() error("boom") end')
+L.execute('NOW = 400; FIRE("PARTY_KILL", SECRET, SECRET); RUN_TIMERS(2)')
+check("a failing check is shown, not raised", "X Y=alive(error: " in text(), lines()[-2:])
 L.execute('TICK()')
 check("the ticker asks for scoreboard data in a battleground", L.eval("REQUESTS") >= 1)
-L.execute('FIRE("UPDATE_BATTLEFIELD_SCORE"); KB = 1; FIRE("UPDATE_BATTLEFIELD_SCORE")')
-text = "\n".join(lines())
-check("a rise in the scoreboard's killing blows is logged with a snapshot",
-      "KILLING BLOW: scoreboard kb 0 -> 1" in text and "SNAP scoreboard kb up" in text, text)
-check("the old scoreboard API row is shown", "old API: row 1 of 1: kb=1" in text, text)
+L.execute('FIRE("UPDATE_BATTLEFIELD_SCORE")')
+check("a secret scoreboard is shown as SECRET", "kb=SECRET" in text(), text())
+L.execute('FIRE("CHAT_MSG_COMBAT_HONOR_GAIN", "You have been awarded 15 Honor.")')
+check("honor chat logged", lines()[-1].endswith("CHAT_MSG_COMBAT_HONOR_GAIN You have been awarded 15 Honor."), lines()[-1])
 
-L.execute('NOW = 200; FIRE("CRITERIA_UPDATE")')
-check("statistics changes are logged", "Total Killing Blows [1491]=1" in "\n".join(lines()))
+# 6. Outside battlegrounds and arenas only where we are is logged
+L.execute('INSTANCE = "party"')
+n = len(lines())
+L.execute('FIRE("PARTY_KILL", SECRET, SECRET); FIRE("CHAT_MSG_COMBAT_HONOR_GAIN", "x"); FIRE("PLAYER_DEAD")')
+check("a dungeon's kills and deaths are not logged", len(lines()) == n, lines()[n:])
+L.execute('FIRE("ZONE_CHANGED_NEW_AREA")')
+check("but where we are still is", len(lines()) == n + 1 and "WHERE (zone change) instance=party" in lines()[-1], lines()[-1])
+L.execute('INSTANCE = "pvp"')
 
-L.execute('C_PvP.GetScoreInfoByPlayerGuid = function() error("boom") end; FIRE("UPDATE_BATTLEFIELD_SCORE")')
-check("a failing API is logged, not raised", "error: " in lines()[-1], lines()[-1])
-
-L.execute('FIRE("CHAT_MSG_COMBAT_HONOR_GAIN", SECRET)')
-check("honor chat logged, secret text shown as SECRET", any("CHAT_MSG_COMBAT_HONOR_GAIN SECRET" in l for l in lines()))
-
-for i in range(2100):
+for i in range(5100):
     L.execute('FIRE("CHAT_MSG_BG_SYSTEM_NEUTRAL", "x")')
-check("the log is capped", len(lines()) == 2000, len(lines()))
+check("the log is capped", len(lines()) == 5000, len(lines()))
 
 probe("off")
 n = len(lines())
