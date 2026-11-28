@@ -188,6 +188,8 @@ local function recordTip(rec)
 		if rec.lg then tt:AddLine("Imported from the old kill and death lists", 0.6, 0.6, 0.6) end
 		if H.IsUnknown(rec) then
 			tt:AddLine("The game did not say who the killer was.", 0.6, 0.6, 0.6, true)
+		elseif rec.g and rec.k == "K" then
+			tt:AddLine("Likely victim: your target when you landed the killing blow. The battleground did not name the victim.", 0.6, 0.6, 0.6, true)
 		elseif rec.g then
 			local others = (rec.gn or 1) > 1 and (" (one of %d enemies targeting you)"):format(rec.gn) or ""
 			tt:AddLine("Likely killer: targeting you when you died" .. others .. ". The game did not name the killer.", 0.6, 0.6, 0.6, true)

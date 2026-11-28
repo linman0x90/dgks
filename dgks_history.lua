@@ -216,7 +216,7 @@ local FIELDS = {
 	mk = { "number", { 0, 100 } }, -- multikill level
 	lg = { "number", { 1, 1 } }, -- imported from the old kill/death lists (personal only)
 	u = { "number", { 1, 1 } },  -- the killer is not known; o says why ("Hidden by the game", ...)
-	g = { "number", { 1, 1 } },  -- the killer is a guess: an enemy player targeting us when we died
+	g = { "number", { 1, 1 } },  -- the opponent is a guess: an enemy player targeting us when we died, or our target on a battleground kill
 	gn = { "number", { 1, 40 } }, -- how many enemy players were targeting us then
 	os = { "number", { 1, 100000 } }, -- opponent spec ID (when an inspect found it)
 	cs = { "number", { 1, 100000 } }, -- author spec ID
@@ -424,7 +424,9 @@ end
 -- guid: the opponent's GUID when known. streak/multikill: the counters after this event.
 -- flags (optional): { unknown = true } when opponent is a reason, not a name;
 -- { hit = { ability, spellId, amount } } for the killing blow, where the game reported it.
--- { guessed = n } when opponent is a guess made from n enemy players targeting us.
+-- { guessed = n } when opponent is a guess: on a death, made from n enemy players targeting us; on a
+-- kill (K), our target when a battleground hid the victim. A guess may add level and class, read
+-- from the unit, for when the player cache does not know the opponent.
 -- Called from the kill and death handlers, so a failure here must never reach them.
 function H:Record(kind, opponent, guid, streak, multikill, flags)
 	local ok, result = pcall(H.RecordUnsafe, H, kind, opponent, guid, streak, multikill, flags)
@@ -504,6 +506,8 @@ function H:RecordUnsafe(kind, opponent, guid, streak, multikill, flags)
 	if flags and type(flags.guessed) == "number" then
 		rec.g = 1
 		rec.gn = math.max(1, math.min(40, math.floor(flags.guessed)))
+		if not rec.ol and usable(flags.level, "number") and flags.level ~= 0 then rec.ol = flags.level end
+		if not rec.oc and usable(flags.class, "string") and flags.class ~= "" then rec.oc = flags.class end
 	end
 
 	-- Shared records get a place in our stream
