@@ -1655,11 +1655,16 @@ function dgks:OnCommReceived(cchan, message, distribution, sender)
 	--@end-debug@
 	if cchan == "dgksVR" then
 		-- Listed in Settings > Broadcasts under the version check button
-		if sender ~= playerName then self:VersionReply(sender, message) end
+		if sender ~= playerName then
+			self:VersionReply(sender, message)
+			self:NoteNewerVersion(message)
+		end
 
 	elseif cchan == "dgksV" then
 		-- Our own check comes back on every channel it went out on (guild, group): nothing to answer
 		if isSecret(sender) or type(sender) ~= "string" or dgks:IsOwnSender(sender) then return end
+		-- A player on a newer version asking: tell ours is out of date (once per session)
+		self:NoteNewerVersion(message)
 		-- One check reaches us once per channel we share with the sender (guild, group, a friend's
 		-- whisper), seconds apart: answer it once. Names are compared the way the game shortens them.
 		local key = sender
@@ -2110,6 +2115,18 @@ local function compareVersions(a, b)
 	return 0
 end
 dgks.CompareVersions = compareVersions
+
+-- Someone's version check or reply shows a version newer than ours: say so in chat, once per session
+-- (and again only for a version newer still). Their version is checked against the x.y.z form before
+-- it is shown, so nothing else a player sends reaches the chat.
+local newerShown = nil
+function dgks:NoteNewerVersion(theirs)
+	if type(theirs) ~= "string" or isSecret(theirs) then return end
+	local shown = theirs:match("^v?(%d+%.%d+%.%d+)")
+	if not shown or compareVersions(shown, newerShown or version) <= 0 then return end
+	newerShown = shown
+	self:Print("A newer version of dG KillShot is out: " .. shown .. " (you have " .. tostring(version) .. ").")
+end
 
 function dgks:VersionCheckText()
 	local check = dgks.versionCheck
