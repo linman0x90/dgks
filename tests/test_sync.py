@@ -28,7 +28,7 @@ IsInInstance = function() return false, "none" end
 InCombatLockdown = function() return false end
 IsInGuild = function() return true end
 GetGuildInfo = function() return "Bloodbath", "Member", 3, nil end
-ROSTER = { "Alice-Realm", "Bob-Realm", "Cara-Realm" }
+ROSTER = { "Alice-Realm", "Bob-Realm", "Cara-Realm", "Dan-Realm", "Eve-Realm", "Finn-Realm" }
 GetNumGuildMembers = function() return #ROSTER end
 ONLINE = {}
 GetGuildRosterInfo = function(i) local n = ROSTER[i] return n, "Member", 3, 80, "Warrior", "", "", "", ONLINE[n] ~= false end
@@ -410,6 +410,55 @@ check("summaries still suppressed (same heads)", 1 <= net.count.get("GUILD", 0) 
 clock.now += 800 * 86400
 A.run("dgks.History:Prune()"); B.run("dgks.History:Prune()")
 check("a stream with nothing newer than 730 days is forgotten", A.heads() == {} and B.heads() == {}, (A.heads(), B.heads()))
+
+# Someone logs in while five members are online whose stores differ a little (three are behind on
+# Alice's latest records). All five hold records the newcomer lacks. A summary that offers all of
+# them stops the early summaries of the rest, so a login doesn't set every member off. Twelve
+# logins, each with the members' delays spread differently.
+print("-- summaries when someone logs in")
+
+
+def login_burst(seed):
+    """Returns (members whose summary answered Finn's, whether Finn got everything)."""
+    global net
+    net = Network()
+    members = {}
+    for n in ("Alice", "Bob", "Cara", "Dan", "Eve"):
+        members[n] = net.clients[n] = Client(n, net, clock)
+    M = list(members.values())
+    for i in range(10):
+        members["Alice"].run(f"dgks.History:Record('K', 'Base{i}', nil, 1, 0)")
+    clock.now += 31
+    settle(M)
+    for n in ("Eve", "Dan", "Cara"):
+        del net.clients[n]
+        members["Alice"].run("dgks.History:Record('K', 'Later', nil, 1, 0)")
+        members["Alice"].tick(); net.deliver()
+    for n in ("Cara", "Dan", "Eve"):
+        net.clients[n] = members[n]
+    assert [list(m.live_heads().values()) for m in M] == [[13], [13], [12], [11], [10]]
+    summaries = []
+    def log_summaries(sender, msg, dist, target):
+        if dist == "GUILD" and msg.startswith("^1^SS^"):
+            summaries.append(sender)
+        return False
+    net.drop = log_summaries
+    F = net.clients["Finn"] = Client("Finn", net, clock)
+    # Every client here shares one C random generator (and each new client reseeds it): seed it now,
+    # so each run spreads the members' delays differently
+    F.run(f"math.randomseed({seed})")
+    run_for(90, M + [F])
+    answered = [s for s in summaries if s != "Finn"]
+    run_for(120, M + [F])
+    return answered, F.live_heads() == members["Alice"].live_heads()
+
+
+runs = [login_burst(seed) for seed in range(1, 13)]
+counts = [len(a) for a, _ in runs]
+print("  summaries answering each login:", counts)
+check("someone always answers", min(counts) >= 1, counts)
+check("at most 3 summaries per login on average (over 5 before)", sum(counts) / len(counts) <= 3, counts)
+check("the newcomer gets everything within 3 minutes, every time", all(ok for _, ok in runs), [ok for _, ok in runs])
 
 print("FAILS:", fails)
 sys.exit(1 if fails else 0)
