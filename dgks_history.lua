@@ -15,15 +15,26 @@
 --   R  (GUILD)    a new record, sent by its author right after it happens
 --   S  (GUILD)    summary: for every stream, the highest sequence number we hold completely.
 --                 Sent at login and every SUMMARY_INTERVAL; postponed when someone else just sent
---                 an identical summary.
+--                 an identical summary. Sent early when a summary shows a member lacks records we
+--                 hold, unless another summary offering all of them comes first.
 --   Q  (WHISPER)  request to a peer whose summary shows newer records: "send stream X after #n"
 --   B  (WHISPER)  a batch of records for one stream, in answer to Q
---   E  (WHISPER)  end of an answer: "you now have everything in stream X up to #n". Records older
---                 than the sender's retention are not sent, so this is what lets the receiver's
---                 head move past pruned records.
+--   E  (WHISPER)  end of an answer: "you now have everything in stream X up to #n", and how many
+--                 records the answer held. Records older than the sender's retention are not sent,
+--                 so this is what lets the receiver's head move past pruned records. If fewer
+--                 records arrived than were sent, the receiver keeps its head and asks again later.
 --
 -- A stream's head means "we hold every non-expired record up to this number". Heads only move up
--- by contiguous records, by the author's own writes, or by an E marker from the peer we asked.
+-- by contiguous records, by the author's own writes, or by an E marker from the peer we asked
+-- (never past the head that peer's summary showed).
+--
+-- A record this version cannot read (a kind or field added later) is skipped like an expired one,
+-- but the stream notes where it was. When SCHEMA goes up, the head moves back there and the stream
+-- is asked for again, so an update brings those records in instead of losing them for good.
+--
+-- A stream with no records left (all expired) keeps its head, so peers that still list it are not
+-- asked for it again, but it is left out of our summaries. Once its newest record is older than
+-- any retention setting allows, nobody can hold anything in it and it is forgotten.
 
 local dgks = dgks
 local H = {}
@@ -33,10 +44,18 @@ local PREFIX = "dgksH"
 local PROTOCOL = 1
 local SUMMARY_FIRST_DELAY = 30        -- seconds after login before the first summary
 local SUMMARY_INTERVAL = 15 * 60      -- seconds between summaries
+-- Seconds before an early summary for a member who lacks records we hold. Spread out, so the first
+-- one has time to reach the others and stop theirs.
+local CATCHUP_DELAY_MIN, CATCHUP_DELAY_MAX = 3, 30
 local REQUEST_TIMEOUT = 120           -- seconds before a request that got no answer may be retried
 local MAX_STREAMS_PER_REQUEST = 40
 local MAX_RECORDS_PER_ANSWER = 300    -- per stream per request; the rest follows next round
 local RECORDS_PER_BATCH = 8
+-- Bump when FIELDS or KINDS change, so records an older version skipped are asked for again
+local SCHEMA = 1
+-- An empty stream whose newest record is older than this is forgotten. Longer than the longest
+-- retention setting (365 days), so no member can still hold a record in it.
+local FORGET_AFTER = 730 * 86400
 -- Kill, Death, duel Win, duel Loss, and X: a killing blow by a party or raid member that we saw
 local KINDS = { K = true, D = true, W = true, L = true, X = true }
 
@@ -50,6 +69,7 @@ local whispered = {}      -- [lowercased name] = time of our last addon whisper 
 local memberCache = {}    -- [name|class] = canonical member name, see H.CanonicalMember
 local storeNames = {}     -- [full name] = class file or false: members named in the guild store
 local nextSummaryAt = 0
+local catchUp             -- [stream] = our head: what the early summary we have scheduled is for
 local myName, myRealm, guildKey
 local legacyKey -- Forever: the key this guild had before the realm fell back to "Unknown" ("Guild-"); still heard
 
@@ -283,10 +303,21 @@ local function advanceHead(st)
 	while st.r[st.h + 1] do st.h = st.h + 1 end
 end
 
+-- Note the time of the newest record seen in a stream (st.t), kept after its records expire
+local function noteTime(st, t)
+	if type(t) == "number" and t > (st.t or 0) then st.t = t end
+end
+
+-- Is this stream listed in our summaries? Only while we hold records in it.
+local function advertised(st)
+	return st.h > 0 and next(st.r) ~= nil
+end
+
 -- Store a record in the guild store. Returns true if it was new.
 local function storeRecord(store, rec)
 	if rec.t < cutoff() then return false end
 	local st = getStream(store, streamKey(rec.a, rec.e))
+	noteTime(st, rec.t)
 	if st.r[rec.s] then return false end
 	st.r[rec.s] = rec
 	advanceHead(st)
@@ -294,23 +325,55 @@ local function storeRecord(store, rec)
 end
 
 function H:Prune()
-	local limit = cutoff()
+	local limit, t, removed = cutoff(), now(), false
 	for _, store in pairs(dgks.db.global.history.guilds) do
-		for _, st in pairs(store.streams) do
+		for key, st in pairs(store.streams) do
 			for seq, rec in pairs(st.r) do
-				if rec.t < limit then st.r[seq] = nil end
+				if rec.t < limit then
+					st.r[seq] = nil
+					removed = true
+				end
+			end
+			if next(st.r) == nil then
+				-- Emptied by a version that did not note times: start counting from now
+				if not st.t then st.t = t end
+				if st.t < t - FORGET_AFTER then store.streams[key] = nil end
+			end
+		end
+	end
+	if removed then H:NotifyChanged() end
+end
+
+-- A record this version could not read was skipped (see onEnd). After an update that may read it,
+-- move the head back to it, so the next summary round asks for the stream again.
+local function retryUnread()
+	for _, store in pairs(dgks.db.global.history.guilds) do
+		for _, st in pairs(store.streams or {}) do
+			if st.u and (st.uv or 0) < SCHEMA then
+				if st.h >= st.u then st.h = st.u - 1 end
+				st.u, st.uv = nil, nil
 			end
 		end
 	end
 end
 
--- Every record in the current guild store, as a list
 -- Two records within this many seconds of each other describe the same kill
 local SAME_KILL_WINDOW = 15
 
+local buildGuildRecords
+
 -- Every record in the current guild store, as a list. Team kills (X) are dropped when the killer
 -- recorded the kill themselves, or when another member already reported the same kill.
+-- Built once and kept until the history changes (H:NotifyChanged) or the guild does: the window asks
+-- for it on every refresh, and the tooltip counts after every change. Callers must not change the list.
 function H:GuildRecords()
+	if H.guildRecordsCache and H.guildRecordsKey == guildKey then return H.guildRecordsCache end
+	local list = buildGuildRecords()
+	H.guildRecordsCache, H.guildRecordsKey = list, guildKey
+	return list
+end
+
+buildGuildRecords = function()
 	local list, teamKills = {}, {}
 	local store = guildStore(false)
 	if not store then return list end
@@ -533,6 +596,7 @@ function H:RecordUnsafe(kind, opponent, guid, streak, multikill, flags)
 	if store then
 		local st = getStream(store, streamKey(rec.a, rec.e))
 		st.r[rec.s] = rec
+		noteTime(st, rec.t)
 		st.h = math.max(st.h, rec.s) -- we are the author: everything up to here is complete
 		send("GUILD", nil, "NORMAL", "R", guildKey, rec)
 	end
@@ -542,21 +606,25 @@ end
 
 -- Sync ------------------------------------------------------------------------------------------
 
+-- The heads we list in a summary (streams we hold records in), and a digest of every head. The
+-- digest also covers empty streams, so it matches a member's whose retention keeps more of them,
+-- and the summaries of members on older versions, which still list every stream.
 local function headsAndDigest()
 	local store = guildStore(false)
-	local heads, keys = {}, {}
+	local heads, keys, all = {}, {}, {}
 	if store then
 		for stream, st in pairs(store.streams) do
 			if st.h > 0 then
-				heads[stream] = st.h
+				all[stream] = st.h
 				keys[#keys + 1] = stream
+				if advertised(st) then heads[stream] = st.h end
 			end
 		end
 	end
 	table.sort(keys)
 	local h = 5381
 	for _, k in ipairs(keys) do
-		local s = k .. "=" .. heads[k] .. ";"
+		local s = k .. "=" .. all[k] .. ";"
 		for i = 1, #s do h = (h * 33 + s:byte(i)) % 4294967296 end
 	end
 	return heads, h
@@ -564,6 +632,7 @@ end
 
 function H:SendSummary()
 	nextSummaryAt = now() + SUMMARY_INTERVAL + math.random(0, 60)
+	catchUp = nil
 	if not guildKey or not dgks.db.profile.historyShare then return end
 	local heads, digest = headsAndDigest()
 	send("GUILD", nil, "BULK", "S", guildKey, PROTOCOL, digest, heads)
@@ -579,6 +648,7 @@ local function onSummary(sender, proto, digest, heads)
 	if digest == myDigest then
 		-- Someone just said what we would say: skip our next summary
 		nextSummaryAt = now() + SUMMARY_INTERVAL + math.random(0, 60)
+		catchUp = nil
 		return
 	end
 	local store = guildStore(true)
@@ -593,20 +663,47 @@ local function onSummary(sender, proto, digest, heads)
 				wants[stream] = mine
 				pending[stream] = { peer = sender, at = t, target = head }
 				count = count + 1
+			elseif p and head > mine and head > (p.target or 0) and p.peer ~= sender
+				and not (p.better and p.better.head >= head) then
+				-- Already asking someone who holds less: note this sender, to ask them next (see onEnd)
+				p.better = { peer = sender, head = head }
 			end
 		end
 	end
 	if count > 0 then
 		send("WHISPER", sender, "BULK", "Q", guildKey, wants)
 	end
+	-- We were going to send our summary early for someone who lacked records (see below). If this
+	-- summary offers all of them, they can ask its sender: ours would only add traffic. Summaries that
+	-- are identical to ours already stop it (above); this also covers members whose stores differ a
+	-- little, which is the usual case when many are online and someone logs in.
+	if catchUp then
+		local covered = true
+		for stream, head in pairs(catchUp) do
+			local theirs = heads[stream]
+			if type(theirs) ~= "number" or theirs < head then
+				covered = false
+				break
+			end
+		end
+		if covered then
+			catchUp = nil
+			nextSummaryAt = t + SUMMARY_INTERVAL + math.random(0, 60)
+		end
+	end
 	-- If the sender is missing records we hold (a member who just logged in, say), send our summary
-	-- soon so they can ask for them. Whoever goes first suppresses the identical summaries of the rest.
+	-- soon so they can ask for them, and note what it is for. Whoever goes first stops the rest.
+	local lacking
 	for stream, st in pairs(store.streams) do
 		local theirs = heads[stream]
-		if st.h > 0 and (type(theirs) ~= "number" or theirs < st.h) then
-			nextSummaryAt = math.min(nextSummaryAt, t + math.random(3, 15))
-			break
+		if advertised(st) and (type(theirs) ~= "number" or theirs < st.h) then
+			lacking = lacking or catchUp or {}
+			lacking[stream] = math.max(lacking[stream] or 0, st.h)
 		end
+	end
+	if lacking then
+		catchUp = lacking
+		nextSummaryAt = math.min(nextSummaryAt, t + math.random(CATCHUP_DELAY_MIN, CATCHUP_DELAY_MAX))
 	end
 end
 
@@ -637,9 +734,13 @@ local function onRequest(sender, wants)
 				end
 			end
 			if #batch > 0 then send("WHISPER", sender, "BULK", "B", guildKey, stream, batch) end
-			send("WHISPER", sender, "BULK", "E", guildKey, stream, upTo)
+			send("WHISPER", sender, "BULK", "E", guildKey, stream, upTo, sent)
 		end
 	end
+end
+
+local function isSeq(v)
+	return type(v) == "number" and v >= 1 and v <= 1e9 and v == math.floor(v)
 end
 
 local function onBatch(sender, stream, batch)
@@ -649,28 +750,52 @@ local function onBatch(sender, stream, batch)
 	local store = guildStore(true)
 	local added = false
 	for _, raw in ipairs(batch) do
+		p.got = (p.got or 0) + 1
 		local rec = cleanRecord(raw)
-		if rec and streamKey(rec.a, rec.e) == stream then
-			if storeRecord(store, rec) then added = true end
+		if rec then
+			if streamKey(rec.a, rec.e) == stream then
+				noteTime(getStream(store, stream), rec.t) -- also when it has expired for us
+				if storeRecord(store, rec) then added = true end
+			end
+		elseif type(raw) == "table" and isSeq(raw.s) then
+			-- A record we cannot read: from a newer version, most likely. Note the first one.
+			if not p.unread or raw.s < p.unread then p.unread = raw.s end
 		end
 	end
 	if added then H:NotifyChanged() end
 end
 
-local function onEnd(sender, stream, upTo)
+local function onEnd(sender, stream, upTo, sent)
 	local p = type(stream) == "string" and pending[stream]
 	if not p or p.peer ~= sender then return end
 	pending[stream] = nil
 	if type(upTo) ~= "number" or upTo ~= math.floor(upTo) or upTo < 1 then return end
+	-- Never past the head the peer's summary showed
+	if p.target and upTo > p.target then upTo = p.target end
 	local st = getStream(guildStore(true), stream)
+	-- The peer says how many records it sent (versions before this one don't). If a different number
+	-- arrived, some were lost on the way: keep only the records we hold, and ask again next round.
+	if sent ~= nil and sent ~= (p.got or 0) then
+		advanceHead(st)
+		return
+	end
+	-- Records we could not read are skipped like expired ones, but the first is noted (see retryUnread)
+	if p.unread and p.unread <= upTo and p.unread > st.h and not (st.u and st.u <= p.unread) then
+		st.u, st.uv = p.unread, SCHEMA
+	end
 	if upTo > st.h then
 		st.h = upTo
 		advanceHead(st)
 	end
 	-- An answer is capped at MAX_RECORDS_PER_ANSWER; ask the same peer for the rest right away
 	if p.target and st.h < p.target and upTo > 0 then
-		pending[stream] = { peer = sender, at = now(), target = p.target }
+		pending[stream] = { peer = sender, at = now(), target = p.target, better = p.better }
 		send("WHISPER", sender, "BULK", "Q", guildKey, { [stream] = st.h })
+	-- A member whose summary came while this answer was on its way holds more: ask them now, rather
+	-- than at the next summary round
+	elseif p.better and st.h < p.better.head and whisperTarget(p.better.peer) then
+		pending[stream] = { peer = p.better.peer, at = now(), target = p.better.head }
+		send("WHISPER", p.better.peer, "BULK", "Q", guildKey, { [stream] = st.h })
 	end
 end
 
@@ -715,7 +840,7 @@ function dgks:OnHistoryComm(prefix, message, distribution, sender)
 	elseif distribution == "WHISPER" and not legacy and isMember(sender) then
 		if op == "Q" then onRequest(sender, a)
 		elseif op == "B" then onBatch(sender, a, b)
-		elseif op == "E" then onEnd(sender, a, b) end
+		elseif op == "E" then onEnd(sender, a, b, c) end
 	end
 end
 
@@ -754,6 +879,7 @@ local function mergeGuildStore(oldKey)
 					-- Past the retention period it would be pruned anyway
 					if clean.t >= limit then
 						if st.r[seq] == nil then st.r[seq] = clean end
+						noteTime(st, clean.t)
 						if seq > top then top = seq end
 					end
 					ost.r[seq] = nil
@@ -771,7 +897,7 @@ local function mergeGuildStore(oldKey)
 		end
 	end
 	if next(old.streams) == nil then guilds[oldKey] = nil end
-	H.countCache = nil
+	H.countCache, H.guildRecordsCache = nil, nil
 end
 
 -- The only keys a guild's history has been saved under on Forever: "Guild-" (before 12.0.010) and
@@ -916,6 +1042,8 @@ end
 
 -- Copy the old killList/deathList (name -> list of "mm/dd/yy HH:MM:SS") into personal history once.
 -- Those lists live in the shared profile, so they go to the first character that loads this version.
+-- Then the lists and the old text log (killlog) are removed from the profile: nothing reads or writes
+-- them any more. A profile that was imported by an earlier version is cleared the same way.
 -- Names saved as "Name-" (see dropEmptyRealm) get the realm they were meant to have: the author's.
 -- Authors are never changed: guild streams are keyed by them.
 function H:RepairEmptyRealms()
@@ -939,7 +1067,11 @@ end
 
 local function importLegacy()
 	local profile = dgks.db.profile
-	if profile.historyLegacyImported then return end
+	if profile.historyLegacyImported then
+		-- Nothing writes the old lists any more, and what they held was imported when this flag was set
+		profile.killList, profile.deathList, profile.killlog = nil, nil, nil
+		return
+	end
 	profile.historyLegacyImported = true
 	local records = dgks.db.char.history.records
 	local imported = {}
@@ -966,6 +1098,7 @@ local function importLegacy()
 	if #imported > 0 then
 		dgks:Print(("Imported %d kills and deaths from the old kill and death lists into your history."):format(#imported))
 	end
+	profile.killList, profile.deathList, profile.killlog = nil, nil, nil
 end
 
 -- Counts per player (for tooltips) ----------------------------------------------------------------
@@ -1030,6 +1163,7 @@ H.listeners = {}
 local notifyScheduled = false
 function H:NotifyChanged()
 	H.countCache = nil
+	H.guildRecordsCache = nil
 	if notifyScheduled then return end
 	notifyScheduled = true
 	C_Timer.After(1, function()
@@ -1074,6 +1208,7 @@ function H:Enable()
 	H:UpdateIdentity()
 	importLegacy()
 	H:RepairEmptyRealms()
+	retryUnread()
 	H:Prune()
 	H:InstallTooltip() -- dgks_history_ui.lua
 

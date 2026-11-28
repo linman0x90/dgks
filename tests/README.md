@@ -20,12 +20,13 @@ They work from any folder. Each test prints PASS or FAIL for each check and exit
 
 | File | What it checks |
 | --- | --- |
-| `test_sync.py` | Guild history sync between simulated clients: live records, catch-up after being offline, late joiners, backlogs over several rounds, forged or malformed messages, pruning, no whispers to members who logged off, and hiding "No player named …" |
+| `test_sync.py` | Guild history sync between simulated clients: live records, catch-up after being offline, late joiners, backlogs over several rounds, forged or malformed messages, pruning, no whispers to members who logged off, and hiding "No player named …". Also a batch lost on the way, an end marker past the advertised head, records from a newer version asked for again after an update, and empty streams left out of summaries and forgotten. And how many summaries answer a login, over twelve logins |
 | `test_sync_fields.py` | Every shared record field reaches other members unchanged, live and through catch-up sync, on retail and Forever names |
 | `test_battleground.py` | Team kills by party and raid members: who records them, and which reach guild history |
 | `test_bgkills.py` | Our kills and deaths in battlegrounds, where the game hides killer and victim: kills told apart by the killing-blow and honorable-kill statistics, the victim confirmed by their nameplate vanishing dead (or our target, marked as likely); our deaths named from the damage meter's Deaths view and its recap; NPC kills, groupmates' kills, dungeons and arenas left alone |
 | `test_death.py` | Deaths on retail: the killer from Blizzard's Death Recap, secret or hidden killers, and the likely-killer guess |
 | `test_pvp_logging.py` | Only PvP kills and deaths are logged by default; the *Also log PvE kills and deaths* option; Classic deaths by who landed the last hit |
+| `test_chat_counts.py` | The "killed N times" chat lines count kills, deaths, duel wins and duel losses separately from personal history; the old kill and death lists are no longer written |
 | `test_unknown_killer.py` | Unknown and likely killers: how they're stored, counted and shown |
 | `test_forever.py` | Forever first and last names in your own name, kills, history, team kills, duels and the player cache; retail unchanged |
 | `test_guild_forever.py` | Forever guild history: merging stores saved by older versions without losing records, our own name read late at login, and members recorded by first name only (departed members, classes, shared first names, an empty roster, the surname separator) |
@@ -37,11 +38,13 @@ They work from any folder. Each test prints PASS or FAIL for each check and exit
 | `test_guild_opponents.py` | The Guild opponents view: one opponent across realm spellings, totals and top killers |
 | `test_window.py` | The main window: Overview numbers, the 14-day chart, top prey and predators, History rows, sorting and filters |
 | `test_main_window.py` | The Settings tab's History options |
+| `test_settings.py` | Settings do what they say: duel win screenshots, battleground broadcasts heard or not, the execute sound options (and hidden without a combat log), the sound channel, resetting the sound files, and labels |
 | `test_bg_broadcasts.py` | The *Ignore guild killshots from other battlegrounds* option: guild members the roster shows in a battleground we are not in are ignored; our battleground, other zones, other channels and unknown senders are not |
 | `test_options.py` | The options: what is registered and the order of the Settings tabs |
 | `test_minimap.py` | The minimap button: position, clicks, dragging and tooltip |
 | `test_recap_window.py` | The death recap: rows, times, crits, school and health colours, the killing-blow row and the Compact view |
 | `test_bgprobe.py` | The battleground probe (development copies only): kills and their statistics, nameplates going away, and the damage meter dumped on leaving combat and on death without flooding the log (each death once, counts otherwise); never stopping on an error |
 | `test_recap_close.py` | The death recap closes when you're alive again, but not when you release to a ghost |
+| `test_version_check.py` | The version check: one reply per player per check whatever channels they heard it on, and none to ourselves |
 
 `names_prelude.py` loads dgks.lua's name helpers into tests that load a single module without dgks.lua.

@@ -17,6 +17,7 @@ local lastkill = 0
 local timestamp = 0
 local lastToHurtMe = ""
 local lastLocalKillKey -- { guid = victim GUID, t = GetTime() } of the last kill we processed locally
+local justRecorded -- the history record of the kill or duel win ProcessKillshot is handling locally
 local newestconfigversion = 1
 local frame, events = CreateFrame("Frame"), {}; -- Event Frame
 local damageDealers = {}
@@ -26,7 +27,7 @@ local playerGUID, playerClass, _, playerRace, playerSex, playerName
 local playerFirstName -- Forever: playerName is "First Surname", this is just "First"
 local inArena = false
 local inBG = false
-local lastMessage, lastSender, lastTimestamp --Versionchecking duplicate detection
+local versionAnswered = {} -- [sender, lowercased] = time() we last answered their version check
 local soundPath = "Interface\\AddOns\\dgks\\sounds\\"
 local classic = false -- Assume retail, we will verify below
 
@@ -179,6 +180,26 @@ function dgks:KilledByPlayer(killer, flags, guid, isPlayer)
 	return inPvPInstance()
 end
 
+-- " 3 times" (or " once") for the chat lines: how often personal history holds a record of this kind
+-- (K, D, W, L) against this player. rec: the record just written, when there is one; its opponent can
+-- carry a realm the name lacks. "" when there is none, as for an NPC that history doesn't keep.
+local function timesText(name, kind, rec)
+	local H = dgks.History
+	if not (H and H.PersonalRecords and H.PlayerKey and H.OpponentKey) or isSecret(name) then return "" end
+	local ok, n = pcall(function()
+		local key
+		if type(rec) == "table" and rec.k == kind then key = H.OpponentKey(rec) else key = H.PlayerKey(name) end
+		if not key then return 0 end
+		local count = 0
+		for _, r in ipairs(H:PersonalRecords()) do
+			if r.k == kind and not H.IsUnknown(r) and H.OpponentKey(r) == key then count = count + 1 end
+		end
+		return count
+	end)
+	if not ok or type(n) ~= "number" or n == 0 then return "" end
+	return n == 1 and " once" or (" " .. n .. " times")
+end
+
 -- Record a PvE kill in history without any announcement (the option is on, NPC killshots are off)
 local lastPvEKill, lastPvEKillAt -- one death can reach us twice (PARTY_KILL and a pet's UNIT_DIED)
 local function recordPvEKill(name, guid)
@@ -210,9 +231,6 @@ local function giveHistorySettings()
 					multikill = 0
 					dgks.db.profile.maxstreak = dgks.db.defaults.profile.maxstreak
 					dgks.db.profile.maxdeathstreak = dgks.db.defaults.profile.maxdeathstreak
-					dgks.db.profile.killlog = dgks.db.defaults.profile.killlog
-					dgks.db.profile.killList = dgks.db.defaults.profile.killList
-					dgks.db.profile.deathList = dgks.db.defaults.profile.deathList
 				end,
 				width = "full",
 				order = 91
@@ -294,7 +312,8 @@ local function giveGeneral()
 			},
 			dopreparesound = {
 				type = 'toggle',
-				name = 'Play prepare sound when entering battlegrounds',
+				name = 'Play prepare sound before a battleground or duel starts',
+				desc = 'Battlegrounds: when the 30-second warning shows (English game clients only). Duels: when the countdown starts.',
 				get = function()
 					return dgks.db.profile.dopreparesound
 				end,
@@ -307,6 +326,8 @@ local function giveGeneral()
 			doexecutesound = {
 				type = 'toggle',
 				name = 'Play execute sound when Player target hits threshold',
+				-- The execute sound watches the combat log, which only Classic clients give addons
+				hidden = function() return not classic end,
 				get = function()
 					return dgks.db.profile.doexecutesound
 				end,
@@ -319,6 +340,7 @@ local function giveGeneral()
 			doexecutesoundpve = {
 				type = 'toggle',
 				name = 'Play execute sound when NPC target hits threshold',
+				hidden = function() return not classic end,
 				get = function()
 					return dgks.db.profile.doexecutesoundpve
 				end,
@@ -332,6 +354,7 @@ local function giveGeneral()
 				type = 'range',
 				name = 'Execute Percent',
 				desc = 'The percent health that triggers the execute sound',
+				hidden = function() return not classic end,
 				width = "full",
 				get = function() return dgks.db.profile.doexecutepercent end,
 				set = function(info, v) dgks.db.profile.doexecutepercent = v end,
@@ -343,7 +366,7 @@ local function giveGeneral()
 			},
 			dochatbox = {
 				type = 'toggle',
-				name = 'Print killshots and deaths in chatbox in addition to logging in /dgks',
+				name = 'Print killshots and deaths in the chat window',
 				get = function()
 					return dgks.db.profile.dochatbox
 				end,
@@ -952,7 +975,13 @@ local function giveSoundFileSetup()
 				type = 'execute',
 				width = "full",
 				name = 'Reset to default files',
-				func = function() dgks.db.profile.kssound = dgks.db.defaults.profile.kssound end,
+				-- A copy: with the defaults table itself, later edits changed the defaults too, so this button
+				-- stopped resetting, and AceDB saw every sound as a default and did not save the edits
+				func = function()
+					local files = {}
+					for i, f in ipairs(dgks.db.defaults.profile.kssound) do files[i] = f end
+					dgks.db.profile.kssound = files
+				end,
 			},
 			kssound1 = {
 				type = 'input',
@@ -1178,10 +1207,7 @@ local defaults = {
 		kssoundP = "prepare.ogg",
 		kssoundE = "finishhim.ogg",
 		kstextM = {"DOUBLEKILL!", "MULTIKILL!", "MEGAKILL!", "ULTRAKILL!!!", "MONSTERKILL!!!", "LUDICROUSKILL!!!", "H O L Y  S H I T!!!"},
-		killlog = {},
 		damageDealers = {},
-		killList = {},
-		deathList = {},
 		kssoundH = "humiliation.ogg",
 		sink20Sticky = true,
 		sink20OutputSink = "Default",
@@ -1273,15 +1299,22 @@ function dgks:GetStreaks()
 	return streak, deathstreak
 end
 
+-- The game setting that turns each selectable sound channel on or off ("Master" has only the main switch)
+local channelSwitch = { SFX = "Sound_EnableSFX", Music = "Sound_EnableMusic", Ambience = "Sound_EnableAmbience" }
+
 function dgks:SoundEventHandler(info, sound)
 	if (dgks.db.profile.dosound) then
-		if (tonumber(GetCVar("Sound_EnableAllSound") and GetCVar("Sound_EnableSFX")) == 1) then
+		local channel = dgks.db.profile.soundchannel or "Master"
+		-- Play when game sound is on and so is the channel chosen in "Sound Channel". This used to check
+		-- the Sound Effects switch whatever the channel, so with effects off nothing played on any channel.
+		local switch = channelSwitch[channel]
+		if GetCVar("Sound_EnableAllSound") == "1" and (not switch or GetCVar(switch) == "1") then
 			--@debug@
 				-- Dev Debugging functions
 				self.Print("DEBUG: Sound: " .. sound )
-				self.Print("DEBUG: Soundchannel: " .. dgks.db.profile.soundchannel )
+				self.Print("DEBUG: Soundchannel: " .. channel )
 			--@end-debug@
-			PlaySoundFile(sound,dgks.db.profile.soundchannel)
+			PlaySoundFile(sound, channel)
 		end
 	end
 end
@@ -1372,8 +1405,9 @@ function dgks:CombatLogEventHandler(info, timestamp, event, hideCaster, sourceGU
 				-- This _DAMAGE event is for out target
 				if UnitIsEnemy("player","target") then 
 					-- This is an enemy
-					if bit.band(destFlags, COMBATLOG_OBJECT_TYPE_PLAYER) == COMBATLOG_OBJECT_TYPE_PLAYER or dgks.db.profile.doexecutesoundpve then
-						-- dest is a player or pve is enabled
+					local isPlayerTarget = bit.band(destFlags, COMBATLOG_OBJECT_TYPE_PLAYER) == COMBATLOG_OBJECT_TYPE_PLAYER
+					if (isPlayerTarget and dgks.db.profile.doexecutesound) or (not isPlayerTarget and dgks.db.profile.doexecutesoundpve) then
+						-- A player with the player option on, or an NPC with the NPC option on
 						local targetHealthPercent = floor(UnitHealth("target") / UnitHealthMax("target") * 100,0)
 						if targetHealthPercent <= dgks.db.profile.doexecutepercent and targetHealthPercent > 1 then
 							-- Target is under threshold
@@ -1469,10 +1503,9 @@ function dgks:KillshotTX(txvictim,txtimestamp,txvictimGUID,flags)
 	-- Reset deathstreak
 	deathstreak = 0
 	
-	-- Handle it locally first: sounds and text must not depend on our own broadcast coming back
-	-- (it does not when we are in no guild or group, or when addon messages are locked down).
-	self:ProcessKillshot("dgks", playerName, txvictim, txtimestamp, streak, multikill, true, txvictimGUID)
-	-- NPC killshots (the "Trigger off NPC/PVE Killshots" option) go to history only with PvE logging on
+	-- NPC killshots (the "Trigger off NPC/PVE Killshots" option) go to history only with PvE logging on.
+	-- Recorded once, and first, so the "killed N times" line counts this kill.
+	justRecorded = nil
 	if txvictimGUID == nil or isPlayerGUID(txvictimGUID) or self:LogsPvE() then
 		-- The killing blow, where we saw it land (Classic's combat log), added to any flags given
 		local hit = lastHitOn(txvictimGUID)
@@ -1481,8 +1514,12 @@ function dgks:KillshotTX(txvictim,txtimestamp,txvictimGUID,flags)
 			for k, v in pairs(flags or {}) do withHit[k] = v end
 			flags = withHit
 		end
-		self.History:Record("K", txvictim, txvictimGUID, streak, multikill, flags)
+		justRecorded = self.History:Record("K", txvictim, txvictimGUID, streak, multikill, flags)
 	end
+	-- Handle it locally first: sounds and text must not depend on our own broadcast coming back
+	-- (it does not when we are in no guild or group, or when addon messages are locked down).
+	self:ProcessKillshot("dgks", playerName, txvictim, txtimestamp, streak, multikill, true, txvictimGUID)
+	justRecorded = nil
 
 	-- Then broadcast our Killshot to other dgks users. Our own echo is dropped in OnCommReceived.
 	self:SendCM("dgks",dgks:Serialize(playerName,txvictim,txtimestamp,streak,multikill))
@@ -1496,10 +1533,11 @@ function dgks:DuelTX(txvictim,txtimestamp)
 	-- Reset deathstreak
 	deathstreak = 0
 	
-	-- Handle it locally first (see KillshotTX), then broadcast our duel win.
+	-- Record it, handle it locally (see KillshotTX), then broadcast our duel win.
 	-- A duel is never a multikill: the multikill counter belongs to the last killshot, so send 0.
+	justRecorded = self.History:Record("W", txvictim, nil, streak, 0)
 	self:ProcessKillshot("dgksDUEL", playerName, txvictim, txtimestamp, streak, 0, true)
-	self.History:Record("W", txvictim, nil, streak, 0)
+	justRecorded = nil
 	self:SendCM("dgksDUEL",dgks:Serialize(playerName,txvictim,txtimestamp,streak,0))
 end
 
@@ -1508,16 +1546,8 @@ function dgks:PlayerLoss(myKiller)
 	deathstreak = deathstreak + 1;
 	if (deathstreak > dgks.db.profile.maxdeathstreak) then dgks.db.profile.maxdeathstreak = deathstreak end
 	if (myKiller == nil) then myKiller = "Unknown Entity" end
-	-- Add to log
-    tinsert(dgks.db.profile.killlog, 1, "[" .. date() .. "]" .. " You were defeated by " .. myKiller .. ".")
-	-- If log is too long prune it
-    if (dgks.db.profile.killlog[21]) then tremove(dgks.db.profile.killlog,21) end
-	-- Store in deathList
-	-- If deathList doesn't exist create it
-	if not dgks.db.profile.deathList[myKiller] then dgks.db.profile.deathList[myKiller] = {} end
-	tinsert(dgks.db.profile.deathList[myKiller], date("%m/%d/%y %H:%M:%S"))
-	if (dgks.db.profile.dochatbox) then dgks:Print("You been defeated by "..myKiller.." "..#dgks.db.profile.deathList[myKiller].." times.") end
-	dgks.History:Record("L", myKiller)
+	local rec = dgks.History:Record("L", myKiller)
+	if (dgks.db.profile.dochatbox) then dgks:Print("You have been defeated by " .. myKiller .. timesText(myKiller, "L", rec) .. ".") end
 	if dgks.db.profile.doscreenshotonduelloss then Screenshot() end
 	if dgks.db.profile.duelemoteloss ~= "none" then
 		dgks:EmoteAt(dgks.db.profile.duelemoteloss, nil, myKiller)
@@ -1605,7 +1635,15 @@ function dgks:OnCommReceived(cchan, message, distribution, sender)
 	-- If raid broadcast is off and we received a raid broadcast just return
 	if not dgks.db.profile.doraid and distribution == "RAID" then return end
 	if not dgks.db.profile.doraid and distribution == "PARTY" then return end
-	if not dgks.db.profile.doraid and distribution == "INSTANCE_CHAT" then return end
+	-- Instance chat is the battleground or arena team there (the "Battleground" option, as for sending),
+	-- and the group in dungeons and raids from the group finder
+	if distribution == "INSTANCE_CHAT" then
+		if inBG or inArena then
+			if not dgks.db.profile.dobg then return end
+		elseif not dgks.db.profile.doraid then
+			return
+		end
+	end
 
 	local timestamp = time()
 	
@@ -1618,8 +1656,18 @@ function dgks:OnCommReceived(cchan, message, distribution, sender)
 		if sender ~= playerName then self:VersionReply(sender, message) end
 
 	elseif cchan == "dgksV" then
-		-- Check for duplicates here
-		if sender == lastSender and message == lastMessage and timestamp == lastTimestamp then return end
+		-- Our own check comes back on every channel it went out on (guild, group): nothing to answer
+		if isSecret(sender) or type(sender) ~= "string" or dgks:IsOwnSender(sender) then return end
+		-- One check reaches us once per channel we share with the sender (guild, group, a friend's
+		-- whisper), seconds apart: answer it once. Names are compared the way the game shortens them.
+		local key = sender
+		if type(Ambiguate) == "function" then
+			local ok, short = pcall(Ambiguate, sender, "none")
+			if ok and type(short) == "string" and not isSecret(short) then key = short end
+		end
+		key = key:lower()
+		if versionAnswered[key] and timestamp - versionAnswered[key] < 10 then return end
+		versionAnswered[key] = timestamp
 		-- Respond with our version
 
 		--@debug@
@@ -1644,10 +1692,6 @@ function dgks:OnCommReceived(cchan, message, distribution, sender)
 			dgks:ProcessKillshot(cchan, rxkiller, rxvictim, rxtimestamp, rxstreak, rxmultikill, false)
 		end
 	end
-
-	--Set duplicate prevention variables
-	lastMessage, lastSender, lastTimestamp = message, sender, timestamp
-
 end
 
 -- Is this addon-message sender our own character? Senders can arrive as "Name-Realm";
@@ -1787,15 +1831,19 @@ function dgks:ProcessKillshot(cchan, rxkiller, rxvictim, rxtimestamp, rxstreak, 
 		-- This now triggers a global cool and most likely cannot work anymore
 		-- if dgks.db.profile.dopet then C_PetJournal.SummonRandomPet(allPets) end
 
-		if dgks.db.profile.doscreenshotonkill then Screenshot()
+		-- A duel win has its own screenshot option; the killshot ones are for kills
+		if cchan == "dgksDUEL" then
+			if dgks.db.profile.doscreenshotonduelwin then Screenshot() end
+		elseif dgks.db.profile.doscreenshotonkill then Screenshot()
 		elseif dgks.db.profile.doscreenshotonstreak and setMaxStreak then Screenshot()
 		elseif dgks.db.profile.doscreenshotonmultikill and rxmultikill > 0 then Screenshot() end
 
-		-- Store in killList
-		if not dgks.db.profile.killList[rxvictim] then dgks.db.profile.killList[rxvictim] = {} end
-		tinsert(dgks.db.profile.killList[rxvictim], date("%m/%d/%y %H:%M:%S"))
-		--fixme this count my be inaccurate due to the way lua handles tables without numeric index
-		if (dgks.db.profile.dochatbox) then dgks:Print("You have killed "..rxvictim.." "..#dgks.db.profile.killList[rxvictim].." times.") end
+		-- KillshotTX and DuelTX record the kill or duel win before calling us, so the count includes it
+		if (dgks.db.profile.dochatbox) then
+			local kind = cchan == "dgksDUEL" and "W" or "K"
+			local verb = kind == "W" and "You have beaten " or "You have killed "
+			dgks:Print(verb .. rxvictim .. timesText(rxvictim, kind, justRecorded) .. ".")
+		end
 	end
 end
 
@@ -1807,30 +1855,14 @@ function dgks:PlayerDeath(myKiller, flags, guid, killerIsPlayer)
 	deathstreak = deathstreak + 1;
 	if (deathstreak > dgks.db.profile.maxdeathstreak) then dgks.db.profile.maxdeathstreak = deathstreak end
 	if (myKiller == nil) then myKiller = "Unknown Entity" end
-	-- Add to log
-    tinsert(dgks.db.profile.killlog, 1, "[" .. date() .. "]" .. " You were killed by " .. myKiller .. ".")
-	-- If log is too long prune it
-    if (dgks.db.profile.killlog[21]) then tremove(dgks.db.profile.killlog,21) end
-	-- Store in deathList
-	-- If deathList doesn't exist create it
-	if not dgks.db.profile.deathList[myKiller] then dgks.db.profile.deathList[myKiller] = {} end
-	tinsert(dgks.db.profile.deathList[myKiller], date("%m/%d/%y %H:%M:%S"))
-	if (dgks.db.profile.dochatbox) then
-		if flags and flags.unknown then
-			dgks:Print("You died. Killer unknown: " .. myKiller .. ".")
-		elseif flags and flags.guessed then
-			dgks:Print("You were likely killed by " .. myKiller .. ".")
-		else
-			dgks:Print("You been murdered by "..myKiller.." "..#dgks.db.profile.deathList[myKiller].." times.")
-		end
-	end
 	-- The recap of this death, collected once: it gives history the killing blow, then is shown
 	local recap
 	if dgks.CollectDeathRecap then
 		local ok, r = pcall(dgks.CollectDeathRecap, dgks)
 		if ok then recap = r end
 	end
-	-- History keeps deaths to players; deaths to NPCs and the environment only with PvE logging on
+	-- History keeps deaths to players; deaths to NPCs and the environment only with PvE logging on.
+	-- Recorded before the chat line, so its count includes this death.
 	local rec
 	if self:LogsPvE() or self:KilledByPlayer(myKiller, flags, guid, killerIsPlayer) then
 		local recFlags = flags
@@ -1842,6 +1874,15 @@ function dgks:PlayerDeath(myKiller, flags, guid, killerIsPlayer)
 			recFlags.hit = hit
 		end
 		rec = dgks.History:Record("D", myKiller, guid, nil, nil, recFlags)
+	end
+	if (dgks.db.profile.dochatbox) then
+		if flags and flags.unknown then
+			dgks:Print("You died. Killer unknown: " .. myKiller .. ".")
+		elseif flags and flags.guessed then
+			dgks:Print("You were likely killed by " .. myKiller .. ".")
+		else
+			dgks:Print("You been murdered by " .. myKiller .. timesText(myKiller, "D", rec) .. ".")
+		end
 	end
 	local recapKiller = myKiller
 	if flags and flags.unknown then
@@ -1987,10 +2028,6 @@ function dgks:SinkUsesBlizzardFCT()
 end
 
 function dgks:ScrollText(msg)
-	
-	tinsert(dgks.db.profile.killlog, 1, "[" .. date() .. "] " .. msg)
-	if (dgks.db.profile.killlog[21]) then tremove(dgks.db.profile.killlog,21) end
-	
 	-- Also print to the chat window when "Print killshots and deaths in chatbox" is on, so the
 	-- text is visible even if the combat text output isn't. Skip when the output sink is already
 	-- ChatFrame, otherwise the line would print twice.
@@ -2032,7 +2069,6 @@ end
 
 -- Version check: ask everyone we broadcast to for their version. Replies (dgksVR) are listed in
 -- Settings > Broadcasts, under the button, instead of in chat.
--- FIXME Entire version checking needs cleanup for duplicate sends
 function dgks:VersionCheck()
 	dgks.versionCheck = { at = time(), replies = {} }
 	self:SendCM("dgksV",version)
@@ -2124,12 +2160,6 @@ function dgks:setSoundPack(info, newsoundset)
     else
         message("Error: That is not a valid option")
     end
-end
-
-function dgks:getKillLog()
-	local plog = ""
-	table.foreach(dgks.db.profile.killlog, function(k,v) plog = plog .. v .. "\n" end)
-	return plog
 end
 
 function dgks:SendCM(cchan,msg)
