@@ -990,6 +990,8 @@ end
 
 -- Copy the old killList/deathList (name -> list of "mm/dd/yy HH:MM:SS") into personal history once.
 -- Those lists live in the shared profile, so they go to the first character that loads this version.
+-- Then the lists and the old text log (killlog) are removed from the profile: nothing reads or writes
+-- them any more. A profile that was imported by an earlier version is cleared the same way.
 -- Names saved as "Name-" (see dropEmptyRealm) get the realm they were meant to have: the author's.
 -- Authors are never changed: guild streams are keyed by them.
 function H:RepairEmptyRealms()
@@ -1013,7 +1015,11 @@ end
 
 local function importLegacy()
 	local profile = dgks.db.profile
-	if profile.historyLegacyImported then return end
+	if profile.historyLegacyImported then
+		-- Nothing writes the old lists any more, and what they held was imported when this flag was set
+		profile.killList, profile.deathList, profile.killlog = nil, nil, nil
+		return
+	end
 	profile.historyLegacyImported = true
 	local records = dgks.db.char.history.records
 	local imported = {}
@@ -1040,6 +1046,7 @@ local function importLegacy()
 	if #imported > 0 then
 		dgks:Print(("Imported %d kills and deaths from the old kill and death lists into your history."):format(#imported))
 	end
+	profile.killList, profile.deathList, profile.killlog = nil, nil, nil
 end
 
 -- Counts per player (for tooltips) ----------------------------------------------------------------

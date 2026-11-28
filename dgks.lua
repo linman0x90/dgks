@@ -17,6 +17,7 @@ local lastkill = 0
 local timestamp = 0
 local lastToHurtMe = ""
 local lastLocalKillKey -- { guid = victim GUID, t = GetTime() } of the last kill we processed locally
+local justRecorded -- the history record of the kill or duel win ProcessKillshot is handling locally
 local newestconfigversion = 1
 local frame, events = CreateFrame("Frame"), {}; -- Event Frame
 local damageDealers = {}
@@ -179,6 +180,26 @@ function dgks:KilledByPlayer(killer, flags, guid, isPlayer)
 	return inPvPInstance()
 end
 
+-- " 3 times" (or " once") for the chat lines: how often personal history holds a record of this kind
+-- (K, D, W, L) against this player. rec: the record just written, when there is one; its opponent can
+-- carry a realm the name lacks. "" when there is none, as for an NPC that history doesn't keep.
+local function timesText(name, kind, rec)
+	local H = dgks.History
+	if not (H and H.PersonalRecords and H.PlayerKey and H.OpponentKey) or isSecret(name) then return "" end
+	local ok, n = pcall(function()
+		local key
+		if type(rec) == "table" and rec.k == kind then key = H.OpponentKey(rec) else key = H.PlayerKey(name) end
+		if not key then return 0 end
+		local count = 0
+		for _, r in ipairs(H:PersonalRecords()) do
+			if r.k == kind and not H.IsUnknown(r) and H.OpponentKey(r) == key then count = count + 1 end
+		end
+		return count
+	end)
+	if not ok or type(n) ~= "number" or n == 0 then return "" end
+	return n == 1 and " once" or (" " .. n .. " times")
+end
+
 -- Record a PvE kill in history without any announcement (the option is on, NPC killshots are off)
 local lastPvEKill, lastPvEKillAt -- one death can reach us twice (PARTY_KILL and a pet's UNIT_DIED)
 local function recordPvEKill(name, guid)
@@ -210,9 +231,6 @@ local function giveHistorySettings()
 					multikill = 0
 					dgks.db.profile.maxstreak = dgks.db.defaults.profile.maxstreak
 					dgks.db.profile.maxdeathstreak = dgks.db.defaults.profile.maxdeathstreak
-					dgks.db.profile.killlog = dgks.db.defaults.profile.killlog
-					dgks.db.profile.killList = dgks.db.defaults.profile.killList
-					dgks.db.profile.deathList = dgks.db.defaults.profile.deathList
 				end,
 				width = "full",
 				order = 91
@@ -1178,10 +1196,7 @@ local defaults = {
 		kssoundP = "prepare.ogg",
 		kssoundE = "finishhim.ogg",
 		kstextM = {"DOUBLEKILL!", "MULTIKILL!", "MEGAKILL!", "ULTRAKILL!!!", "MONSTERKILL!!!", "LUDICROUSKILL!!!", "H O L Y  S H I T!!!"},
-		killlog = {},
 		damageDealers = {},
-		killList = {},
-		deathList = {},
 		kssoundH = "humiliation.ogg",
 		sink20Sticky = true,
 		sink20OutputSink = "Default",
@@ -1469,9 +1484,16 @@ function dgks:KillshotTX(txvictim,txtimestamp,txvictimGUID,flags)
 	-- Reset deathstreak
 	deathstreak = 0
 	
+	-- NPC killshots (the "Trigger off NPC/PVE Killshots" option) go to history only with PvE logging on.
+	-- Recorded first, so the "killed N times" line counts this kill.
+	justRecorded = nil
+	if txvictimGUID == nil or isPlayerGUID(txvictimGUID) or self:LogsPvE() then
+		justRecorded = self.History:Record("K", txvictim, txvictimGUID, streak, multikill)
+	end
 	-- Handle it locally first: sounds and text must not depend on our own broadcast coming back
 	-- (it does not when we are in no guild or group, or when addon messages are locked down).
 	self:ProcessKillshot("dgks", playerName, txvictim, txtimestamp, streak, multikill, true, txvictimGUID)
+	justRecorded = nil
 	-- NPC killshots (the "Trigger off NPC/PVE Killshots" option) go to history only with PvE logging on
 	if txvictimGUID == nil or isPlayerGUID(txvictimGUID) or self:LogsPvE() then
 		-- The killing blow, where we saw it land (Classic's combat log), added to any flags given
@@ -1496,10 +1518,11 @@ function dgks:DuelTX(txvictim,txtimestamp)
 	-- Reset deathstreak
 	deathstreak = 0
 	
-	-- Handle it locally first (see KillshotTX), then broadcast our duel win.
+	-- Record it, handle it locally (see KillshotTX), then broadcast our duel win.
 	-- A duel is never a multikill: the multikill counter belongs to the last killshot, so send 0.
+	justRecorded = self.History:Record("W", txvictim, nil, streak, 0)
 	self:ProcessKillshot("dgksDUEL", playerName, txvictim, txtimestamp, streak, 0, true)
-	self.History:Record("W", txvictim, nil, streak, 0)
+	justRecorded = nil
 	self:SendCM("dgksDUEL",dgks:Serialize(playerName,txvictim,txtimestamp,streak,0))
 end
 
@@ -1508,16 +1531,8 @@ function dgks:PlayerLoss(myKiller)
 	deathstreak = deathstreak + 1;
 	if (deathstreak > dgks.db.profile.maxdeathstreak) then dgks.db.profile.maxdeathstreak = deathstreak end
 	if (myKiller == nil) then myKiller = "Unknown Entity" end
-	-- Add to log
-    tinsert(dgks.db.profile.killlog, 1, "[" .. date() .. "]" .. " You were defeated by " .. myKiller .. ".")
-	-- If log is too long prune it
-    if (dgks.db.profile.killlog[21]) then tremove(dgks.db.profile.killlog,21) end
-	-- Store in deathList
-	-- If deathList doesn't exist create it
-	if not dgks.db.profile.deathList[myKiller] then dgks.db.profile.deathList[myKiller] = {} end
-	tinsert(dgks.db.profile.deathList[myKiller], date("%m/%d/%y %H:%M:%S"))
-	if (dgks.db.profile.dochatbox) then dgks:Print("You been defeated by "..myKiller.." "..#dgks.db.profile.deathList[myKiller].." times.") end
-	dgks.History:Record("L", myKiller)
+	local rec = dgks.History:Record("L", myKiller)
+	if (dgks.db.profile.dochatbox) then dgks:Print("You have been defeated by " .. myKiller .. timesText(myKiller, "L", rec) .. ".") end
 	if dgks.db.profile.doscreenshotonduelloss then Screenshot() end
 	if dgks.db.profile.duelemoteloss ~= "none" then
 		dgks:EmoteAt(dgks.db.profile.duelemoteloss, nil, myKiller)
@@ -1791,11 +1806,12 @@ function dgks:ProcessKillshot(cchan, rxkiller, rxvictim, rxtimestamp, rxstreak, 
 		elseif dgks.db.profile.doscreenshotonstreak and setMaxStreak then Screenshot()
 		elseif dgks.db.profile.doscreenshotonmultikill and rxmultikill > 0 then Screenshot() end
 
-		-- Store in killList
-		if not dgks.db.profile.killList[rxvictim] then dgks.db.profile.killList[rxvictim] = {} end
-		tinsert(dgks.db.profile.killList[rxvictim], date("%m/%d/%y %H:%M:%S"))
-		--fixme this count my be inaccurate due to the way lua handles tables without numeric index
-		if (dgks.db.profile.dochatbox) then dgks:Print("You have killed "..rxvictim.." "..#dgks.db.profile.killList[rxvictim].." times.") end
+		-- KillshotTX and DuelTX record the kill or duel win before calling us, so the count includes it
+		if (dgks.db.profile.dochatbox) then
+			local kind = cchan == "dgksDUEL" and "W" or "K"
+			local verb = kind == "W" and "You have beaten " or "You have killed "
+			dgks:Print(verb .. rxvictim .. timesText(rxvictim, kind, justRecorded) .. ".")
+		end
 	end
 end
 
@@ -1807,40 +1823,20 @@ function dgks:PlayerDeath(myKiller, flags, guid, killerIsPlayer)
 	deathstreak = deathstreak + 1;
 	if (deathstreak > dgks.db.profile.maxdeathstreak) then dgks.db.profile.maxdeathstreak = deathstreak end
 	if (myKiller == nil) then myKiller = "Unknown Entity" end
-	-- Add to log
-    tinsert(dgks.db.profile.killlog, 1, "[" .. date() .. "]" .. " You were killed by " .. myKiller .. ".")
-	-- If log is too long prune it
-    if (dgks.db.profile.killlog[21]) then tremove(dgks.db.profile.killlog,21) end
-	-- Store in deathList
-	-- If deathList doesn't exist create it
-	if not dgks.db.profile.deathList[myKiller] then dgks.db.profile.deathList[myKiller] = {} end
-	tinsert(dgks.db.profile.deathList[myKiller], date("%m/%d/%y %H:%M:%S"))
+	-- History keeps deaths to players; deaths to NPCs and the environment only with PvE logging on.
+	-- Recorded before the chat line, so its count includes this death.
+	local rec
+	if self:LogsPvE() or self:KilledByPlayer(myKiller, flags, guid, killerIsPlayer) then
+		rec = dgks.History:Record("D", myKiller, guid, nil, nil, flags)
+	end
 	if (dgks.db.profile.dochatbox) then
 		if flags and flags.unknown then
 			dgks:Print("You died. Killer unknown: " .. myKiller .. ".")
 		elseif flags and flags.guessed then
 			dgks:Print("You were likely killed by " .. myKiller .. ".")
 		else
-			dgks:Print("You been murdered by "..myKiller.." "..#dgks.db.profile.deathList[myKiller].." times.")
+			dgks:Print("You been murdered by " .. myKiller .. timesText(myKiller, "D", rec) .. ".")
 		end
-	end
-	-- The recap of this death, collected once: it gives history the killing blow, then is shown
-	local recap
-	if dgks.CollectDeathRecap then
-		local ok, r = pcall(dgks.CollectDeathRecap, dgks)
-		if ok then recap = r end
-	end
-	-- History keeps deaths to players; deaths to NPCs and the environment only with PvE logging on
-	local rec
-	if self:LogsPvE() or self:KilledByPlayer(myKiller, flags, guid, killerIsPlayer) then
-		local recFlags = flags
-		local ok, hit = pcall(dgks.KillingBlowOf, dgks, recap)
-		if ok and hit then
-			recFlags = {}
-			for k, v in pairs(flags or {}) do recFlags[k] = v end
-			recFlags.hit = hit
-		end
-		rec = dgks.History:Record("D", myKiller, guid, nil, nil, recFlags)
 	end
 	local recapKiller = myKiller
 	if flags and flags.unknown then
@@ -1986,10 +1982,6 @@ function dgks:SinkUsesBlizzardFCT()
 end
 
 function dgks:ScrollText(msg)
-	
-	tinsert(dgks.db.profile.killlog, 1, "[" .. date() .. "] " .. msg)
-	if (dgks.db.profile.killlog[21]) then tremove(dgks.db.profile.killlog,21) end
-	
 	-- Also print to the chat window when "Print killshots and deaths in chatbox" is on, so the
 	-- text is visible even if the combat text output isn't. Skip when the output sink is already
 	-- ChatFrame, otherwise the line would print twice.
@@ -2123,12 +2115,6 @@ function dgks:setSoundPack(info, newsoundset)
     else
         message("Error: That is not a valid option")
     end
-end
-
-function dgks:getKillLog()
-	local plog = ""
-	table.foreach(dgks.db.profile.killlog, function(k,v) plog = plog .. v .. "\n" end)
-	return plog
 end
 
 function dgks:SendCM(cchan,msg)
