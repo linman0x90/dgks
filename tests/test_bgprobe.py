@@ -91,6 +91,17 @@ GetPVPSessionStats = function() return 0, 0 end
 GetBuildInfo = function() return "1.15.8" end
 SlashCmdList = {}
 dgks = { db = { global = {} }, BGKills = {} }
+SEND_RESULT = 0
+Enum = { SendAddonMessageResult = { Success = 0, AddonMessageThrottle = 3, NotInGroup = 5, GeneralError = 9, AddOnMessageLockdown = 11 } }
+SENT, RECEIVED, CALLBACKS = {}, {}, 0
+function dgks:SendCommMessage(prefix, text, dist, target, prio, cb, arg)
+  SENT[#SENT+1] = prefix .. ":" .. dist
+  if cb then cb(arg, #text, #text, SEND_RESULT) end
+end
+function dgks:OnCommReceived(prefix, message, dist, sender) RECEIVED[#RECEIVED+1] = prefix .. ":" .. sender end
+IN_COMBAT_COMM = false
+InCombatLockdown = function() return IN_COMBAT_COMM end
+C_ChatInfo = { InChatMessagingLockdown = function() return IN_COMBAT_COMM end }
 ''')
 L.execute(open(os.path.join(REPO, "dgks_bgprobe.lua"), encoding="utf-8").read())
 L.execute('FIRE("PLAYER_LOGIN")')
@@ -106,6 +117,21 @@ check("events are ignored while off", len(lines()) == 0)
 probe("on")
 check("on: build and where we are logged", "PROBE ON (1.15.8" in text() and "instance=pvp zone=Alterac Valley" in text(), text())
 check("the combat log's registration is never touched (a protected action)", L.eval("FORBIDDEN") is None)
+# Addon messages: each send with the game's result, each receive, with combat and lockdown
+L.execute('dgks:SendCommMessage("dgks", "hello", "INSTANCE_CHAT", nil, nil, function(a, s, t, r) CALLBACKS = CALLBACKS + 1 end, "x")')
+t = text()
+check("a send is logged with the game's result, and still goes out with the caller's callback",
+      "SEND dgks to INSTANCE_CHAT inCombat=false lockdown=false" in t and "SENT dgks to INSTANCE_CHAT: 5 bytes of 5, result=Success" in t
+      and list(L.eval("SENT").values()) == ["dgks:INSTANCE_CHAT"] and L.eval("CALLBACKS") == 1, t)
+L.execute('IN_COMBAT_COMM = true; SEND_RESULT = 11; dgks:SendCommMessage("dgksV", "12.0.016", "GUILD")')
+check("a send blocked in combat shows the lockdown result", "SEND dgksV to GUILD inCombat=true lockdown=true" in text()
+      and "result=AddOnMessageLockdown" in text(), lines()[-2:])
+L.execute('IN_COMBAT_COMM = false; SEND_RESULT = 0')
+L.execute('dgks:SendCommMessage("dgksH", "sync", "GUILD")')
+check("guild history sync is not logged", not any("dgksH" in l for l in lines()), lines()[-2:])
+L.execute('dgks:OnCommReceived("dgks", "msg", "INSTANCE_CHAT", "Bob")')
+check("a receive is logged and still handled", lines()[-1].endswith("RECV dgks from Bob via INSTANCE_CHAT inCombat=false lockdown=false")
+      and list(L.eval("RECEIVED").values()) == ["dgks:Bob"], lines()[-1])
 L.execute('dgks.BGKills.trace("kill #1: ours")')
 check("the battleground kill code's steps are logged while on", lines()[-1].endswith("BGKILLS kill #1: ours"), lines()[-1])
 check("entering: the statistics are read ('--' counts as 0)", "BG KB=0" in text(), text())

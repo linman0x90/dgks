@@ -15,6 +15,8 @@
 --   * a VERDICT line: ours or a groupmate's, and the victim if exactly one candidate died
 --   * every player nameplate that goes away (NAME_PLATE_UNIT_REMOVED): name, enemy, dead or alive
 --     then; the VERDICT lists the enemy plates that vanished dead from 1 s before the kill to 2 s after
+--   * every addon message dG KillShot sends (and the game's result) or receives, with whether we
+--     were in combat and whether the game reports chat messaging as locked down
 --   * Blizzard's damage meter (C_DamageMeter) each time we leave combat: the Deaths, EnemyDamageTaken,
 --     DamageDone and DamageTaken views (names, classes, death times, recap IDs), our own spell
 --     breakdowns (whom we hit, who hit us, deadly spells), and the Death Recap of each death listed
@@ -527,6 +529,71 @@ frame:SetScript("OnEvent", function(_, event, ...)
 	if not ok then log("ERROR in %s: %s", event, show(tostring(err))) end
 end)
 
+-- Addon messages -----------------------------------------------------------------------------------
+-- Midnight is said to block addon messages inside instances during combat. dG KillShot never sees
+-- whether a send worked: ChatThrottleLib gets the game's result and only hands it to a callback.
+-- So the probe wraps dgks:SendCommMessage to pass a callback that logs the result, and
+-- dgks:OnCommReceived to log what arrives. Only dG KillShot's own methods are wrapped, never a game
+-- function, so nothing of Blizzard's is tainted. Guild history sync (dgksH) is left out: it is busy.
+
+local QUIET_PREFIXES = { dgksH = true }
+
+-- A send result as its name ("Success", "AddonMessageThrottle", ...) where the game has the enum
+local function resultName(r)
+	if isSecret(r) then return "SECRET" end
+	local enum = Enum and Enum.SendAddonMessageResult
+	if type(enum) == "table" then
+		for name, v in pairs(enum) do
+			if v == r then return name end
+		end
+	end
+	if r == true then return "Success" end
+	return show(r)
+end
+
+-- Is the game holding chat and addon messages back right now? (12.0 API, where present)
+local function lockdown()
+	if C_ChatInfo and type(C_ChatInfo.InChatMessagingLockdown) == "function" then
+		return try(C_ChatInfo.InChatMessagingLockdown)
+	end
+	return "no API"
+end
+
+local commWrapped = false
+local function wrapComm()
+	if commWrapped or not dgks or type(dgks.SendCommMessage) ~= "function" then return end
+	commWrapped = true
+	local origSend = dgks.SendCommMessage
+	dgks.SendCommMessage = function(self, prefix, text, distribution, target, prio, callbackFn, callbackArg)
+		if not state or not state.on or QUIET_PREFIXES[prefix] then
+			return origSend(self, prefix, text, distribution, target, prio, callbackFn, callbackArg)
+		end
+		local sentAt = GetTime()
+		log("SEND %s to %s%s inCombat=%s lockdown=%s", show(prefix), show(distribution),
+			target and (" " .. show(target)) or "", try(InCombatLockdown), lockdown())
+		local function logged(arg, sent, total, sendResult)
+			log("  SENT %s to %s: %s bytes of %s, result=%s, after %.2fs", show(prefix), show(distribution),
+				show(sent), show(total), resultName(sendResult), GetTime() - sentAt)
+			if callbackFn then return callbackFn(arg, sent, total, sendResult) end
+		end
+		local ok, err = pcall(origSend, self, prefix, text, distribution, target, prio, logged, callbackArg)
+		if not ok then
+			log("  SEND %s failed: %s", show(prefix), show(tostring(err)))
+			error(err, 2)
+		end
+	end
+	local origRecv = dgks.OnCommReceived
+	if type(origRecv) == "function" then
+		dgks.OnCommReceived = function(self, prefix, message, distribution, sender, ...)
+			if state and state.on and not QUIET_PREFIXES[prefix] then
+				log("RECV %s from %s via %s inCombat=%s lockdown=%s", show(prefix), show(sender), show(distribution),
+					try(InCombatLockdown), lockdown())
+			end
+			return origRecv(self, prefix, message, distribution, sender, ...)
+		end
+	end
+end
+
 -- Registers every event the probe uses; returns the ones the game refused
 local function register()
 	local refused = {}
@@ -542,6 +609,8 @@ local function start()
 	-- No test of the combat log here: it is closed to addons on retail, and touching its registration is
 	-- a protected action (ADDON_ACTION_FORBIDDEN), which pcall cannot catch
 	log("C_DamageMeter: %s", type(C_DamageMeter) == "table" and "present" or "missing")
+	wrapComm()
+	log("Addon messages: lockdown=%s", lockdown())
 	-- The battleground kill and death code's own steps: plates seen, each kill's verdict, our deaths
 	if dgks.BGKills then
 		dgks.BGKills.trace = function(msg)
