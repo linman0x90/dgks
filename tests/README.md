@@ -23,7 +23,7 @@ They work from any folder. Each test prints PASS or FAIL for each check and exit
 | `test_sync.py` | Guild history sync between simulated clients: live records, catch-up after being offline, late joiners, backlogs over several rounds, forged or malformed messages, pruning, no whispers to members who logged off, and hiding "No player named …" |
 | `test_sync_fields.py` | Every shared record field reaches other members unchanged, live and through catch-up sync, on retail and Forever names |
 | `test_battleground.py` | Team kills by party and raid members: who records them, and which reach guild history |
-| `test_bgkills.py` | Our kills in battlegrounds, where the game hides the killer and the victim: told apart by the killing-blow and honorable-kill statistics, the victim taken from our target and marked as likely; NPC kills, groupmates' kills, dungeons and arenas left alone |
+| `test_bgkills.py` | Our kills and deaths in battlegrounds, where the game hides killer and victim: kills told apart by the killing-blow and honorable-kill statistics, the victim confirmed by their nameplate vanishing dead (or our target, marked as likely); our deaths named from the damage meter's Deaths view and its recap; NPC kills, groupmates' kills, dungeons and arenas left alone |
 | `test_death.py` | Deaths on retail: the killer from Blizzard's Death Recap, secret or hidden killers, and the likely-killer guess |
 | `test_pvp_logging.py` | Only PvP kills and deaths are logged by default; the *Also log PvE kills and deaths* option; Classic deaths by who landed the last hit |
 | `test_unknown_killer.py` | Unknown and likely killers: how they're stored, counted and shown |
@@ -41,7 +41,7 @@ They work from any folder. Each test prints PASS or FAIL for each check and exit
 | `test_options.py` | The options: what is registered and the order of the Settings tabs |
 | `test_minimap.py` | The minimap button: position, clicks, dragging and tooltip |
 | `test_recap_window.py` | The death recap: rows, times, crits, school and health colours, the killing-blow row and the Compact view |
-| `test_bgprobe.py` | The battleground probe (development copies only): whether each PARTY_KILL with secret GUIDs was ours, from the Battleground Killing Blows statistic; which enemy player around us died; logging only in battlegrounds and arenas; never stopping on an error |
+| `test_bgprobe.py` | The battleground probe (development copies only): kills and their statistics, nameplates going away, and the damage meter dumped on leaving combat and on death without flooding the log (each death once, counts otherwise); never stopping on an error |
 | `test_recap_close.py` | The death recap closes when you're alive again, but not when you release to a ghost |
 
 `names_prelude.py` loads dgks.lua's name helpers into tests that load a single module without dgks.lua.

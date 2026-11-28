@@ -204,25 +204,40 @@ check("Deaths: the entry with its death time and recap ID; a secret recap shown 
 check("EnemyDamageTaken: the enemy, secret GUID shown, and the recap's killing blow",
       "Sdot class=ROGUE total=900" in t and "display=2 deathTime=30 recapID=8 guid=SECRET" in t
       and "recap: 1 events; killing blow: source=Me spell=Crusader Strike amount=300 overkill=120" in t, t)
-check("Deaths/overall: the entries listed", "METER Deaths/overall: 2 entries" in t and "Old2" in t, t)
-check("DamageDone: only our own entry, then whom we hit, with deadly and overkill",
-      "Ally" not in t and "spell=35395 creature=nil total=300 overkill=120 deadly=true units: Sdot(ROGUE, 300)" in t, t)
-check("DamageTaken: a single unit detail is read too", "spell=1752" in t and "units: Sdot(nil, 200)" in t, t)
+check("Deaths/overall: the count only", "METER Deaths/overall: 2 entries" in t and "Old2" not in t, t)
+check("DamageDone and DamageTaken: counts only, no entries or spells", "METER DamageDone/current: 2 entries" in t
+      and "Ally" not in t and "current spells" not in t, t)
 
 n = len(lines())
 L.execute('NOW = 381; FIRE("PLAYER_REGEN_ENABLED")')
 check("dumps are at most every 3 seconds", len(lines()) == n)
-L.execute('NOW = 390; IN_COMBAT = true; FIRE("DAMAGE_METER_COMBAT_SESSION_UPDATED", 1, 2)')
-check("session updates in combat are logged, not dumped", lines()[-1].endswith("DAMAGE_METER_COMBAT_SESSION_UPDATED 1, 2"), lines()[-1])
-L.execute('NOW = 400; FIRE("PLAYER_REGEN_ENABLED")')
+L.execute('NOW = 390; FIRE("PLAYER_REGEN_ENABLED")')
+t = text().split("METER DUMP (left combat)")[-1]
+check("a death is logged once: not again in the next dump", "Bob class=ROGUE" not in t and "METER Deaths/current: 1 entries" in t, t)
+L.execute('SESSIONS[1][9].combatSources[2] = { name = "Me", isLocalPlayer = true, deathTimeSeconds = 40, deathRecapID = 8 }')
+L.execute('NOW = 400; FIRE("PLAYER_DEAD"); RUN_TIMERS(2)')
+t = text().split("METER DUMP (we died)")[-1] if "METER DUMP (we died)" in text() else ""
+check("our death: the meter is dumped a moment later, with the new death and its recap",
+      "Me class=nil total=nil local=true" in t and "recap: 1 events; killing blow: source=Me spell=Crusader Strike" in t, t)
+
+L.execute('NOW = 410; probe = SlashCmdList.DGKSPROBE; probe("snap")')
+t = text().split("METER DUMP (manual)")[-1]
+check("snap: the full dump, with our spell breakdowns", "spell=35395 creature=nil total=300 overkill=120 deadly=true units: Sdot(ROGUE, 300)" in t
+      and "spell=1752" in t and "units: Sdot(nil, 200)" in t and "Ally" not in t, t)
+
+L.execute('IN_COMBAT = true; NOW = 420; FIRE("PLAYER_REGEN_ENABLED")')
 check("a secret session is shown as SECRET", "METER Deaths/current: SECRET" in text(), lines()[-3:])
 L.execute('IN_COMBAT = false')
-L.execute('NOW = 401; for i = 1, 50 do FIRE("DAMAGE_METER_CURRENT_SESSION_UPDATED") end')
-check("current-session updates are counted, not logged one by one",
-      sum(1 for l in lines() if "DAMAGE_METER_CURRENT_SESSION_UPDATED" in l) == 1, [l for l in lines() if "CURRENT_SESSION" in l])
-L.execute('C_DamageMeter.GetCombatSessionFromType = function() error("nope") end; NOW = 420; FIRE("PLAYER_REGEN_ENABLED")')
+n = len(lines())
+L.execute('NOW = 421; for i = 1, 50 do FIRE("DAMAGE_METER_CURRENT_SESSION_UPDATED"); FIRE("DAMAGE_METER_COMBAT_SESSION_UPDATED", 1, 0) end')
+L.execute('NOW = 460; FIRE("DAMAGE_METER_CURRENT_SESSION_UPDATED")')
+ev = [l for l in lines()[n:] if "METER EVENTS" in l]
+check("meter update events are only counted, logged every 30 seconds without dumping",
+      len(ev) == 2 and "DAMAGE_METER_COMBAT_SESSION_UPDATED x50, DAMAGE_METER_CURRENT_SESSION_UPDATED x50" in ev[1]
+      and not any("METER DUMP" in l for l in lines()[n:]), ev)
+L.execute('C_DamageMeter.GetCombatSessionFromType = function() error("nope") end; NOW = 470; FIRE("PLAYER_REGEN_ENABLED")')
 check("a failing meter call is logged, not raised", "METER Deaths/current: error: " in text(), lines()[-3:])
-L.execute('C_DamageMeter = nil; NOW = 430; FIRE("PLAYER_REGEN_ENABLED")')
+L.execute('C_DamageMeter = nil; NOW = 480; FIRE("PLAYER_REGEN_ENABLED")')
 check("no damage meter: said once per dump", lines()[-1].endswith("METER (left combat): C_DamageMeter missing"), lines()[-1])
 
 # 5. Errors and secrets never stop the probe

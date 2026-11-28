@@ -356,7 +356,14 @@ for _, e in ipairs({ "CHAT_MSG_COMBAT_HONOR_GAIN", "CHAT_MSG_BG_SYSTEM_NEUTRAL",
 	"CHAT_MSG_BG_SYSTEM_HORDE", "CHAT_MSG_COMBAT_XP_GAIN" }) do
 	handlers[e] = chat(e)
 end
-function handlers.PLAYER_DEAD() log("PLAYER_DEAD"); checkScore("we died") end
+local dumpMeterLater -- set below, once dumpMeter exists
+
+function handlers.PLAYER_DEAD()
+	log("PLAYER_DEAD")
+	checkScore("we died")
+	-- Our death in the meter: dying ends combat; give the meter a moment to list it
+	C_Timer.After(1.5, function() pcall(dumpMeterLater, "we died") end)
+end
 
 -- Damage meter (C_DamageMeter) -------------------------------------------------------------------
 -- Blizzard's meter keeps Deaths and EnemyDamageTaken views whose entries carry a name, class, death
@@ -455,48 +462,58 @@ local function dumpOwnSpells(label, sType, mType, sources)
 	end
 end
 
+-- What the meter dumps have logged already: each death once (by recap ID)
+local seenRecaps = {}
 local meterDumpAt = -100
-local function dumpMeter(reason)
+
+-- full: also the spell breakdowns and the first enemy entries (on /dgksprobe snap). Otherwise only
+-- counts and the deaths not logged before, so a long battleground cannot fill the log.
+local function dumpMeter(reason, full)
 	if type(C_DamageMeter) ~= "table" then log("METER (%s): C_DamageMeter missing", reason) return end
-	if GetTime() - meterDumpAt < 3 then return end
+	if not full and GetTime() - meterDumpAt < 3 then return end
 	meterDumpAt = GetTime()
 	log("METER DUMP (%s) available=%s inCombat=%s sessions=%s", reason, try(C_DamageMeter.IsDamageMeterAvailable),
 		try(InCombatLockdown), try(function() return #C_DamageMeter.GetAvailableCombatSessions() end))
 	local current, overall = sessionType("Current", 1), sessionType("Overall", 0)
-	local all = function() return true end
-	dumpSession("Deaths/current", current, meterType("Deaths", 9), all, true)
-	-- The whole battleground's deaths: the last 10 entries only, without recaps
-	local deaths = dumpSession("Deaths/overall", overall, meterType("Deaths", 9), function() return false end)
-	for i = math.max(1, #deaths - 9), #deaths do log("  %s", sourceLine(deaths[i])) end
-	dumpSession("EnemyDamageTaken/current", current, meterType("EnemyDamageTaken", 10), function(src, i)
-		return i <= 10 or field(src, "deathTimeSeconds") ~= nil
+	local none = function() return false end
+	-- Deaths: only the ones not logged before, with their recap
+	dumpSession("Deaths/current", current, meterType("Deaths", 9), function(src)
+		local id = field(src, "deathRecapID")
+		if id == nil or isSecret(id) or seenRecaps[id] then return false end
+		seenRecaps[id] = true
+		return true
 	end, true)
-	local done = dumpSession("DamageDone/current", current, meterType("DamageDone", 0), function(src)
-		return field(src, "isLocalPlayer") == true
-	end)
-	dumpOwnSpells("DamageDone/current", current, meterType("DamageDone", 0), done)
-	local taken = dumpSession("DamageTaken/current", current, meterType("DamageTaken", 7), function(src)
-		return field(src, "isLocalPlayer") == true
-	end)
-	dumpOwnSpells("DamageTaken/current", current, meterType("DamageTaken", 7), taken)
+	dumpSession("Deaths/overall", overall, meterType("Deaths", 9), none)
+	dumpSession("EnemyDamageTaken/current", current, meterType("EnemyDamageTaken", 10), function(src, i)
+		local t = field(src, "deathTimeSeconds")
+		return (full and i <= 10) or (type(t) == "number" and t > 0)
+	end, true)
+	local mine = function(src) return field(src, "isLocalPlayer") == true end
+	local done = dumpSession("DamageDone/current", current, meterType("DamageDone", 0), full and mine or none)
+	local taken = dumpSession("DamageTaken/current", current, meterType("DamageTaken", 7), full and mine or none)
+	if full then
+		dumpOwnSpells("DamageDone/current", current, meterType("DamageDone", 0), done)
+		dumpOwnSpells("DamageTaken/current", current, meterType("DamageTaken", 7), taken)
+	end
 end
 
 function handlers.PLAYER_REGEN_ENABLED() dumpMeter("left combat") end
+dumpMeterLater = function(reason) meterDumpAt = -100; dumpMeter(reason) end
 
-function handlers.DAMAGE_METER_COMBAT_SESSION_UPDATED(...)
-	log("DAMAGE_METER_COMBAT_SESSION_UPDATED %s", try(function(...) return ... end, ...))
-	if readable(InCombatLockdown) == false then dumpMeter("session updated, out of combat") end
-end
-
--- Fires on every update while fighting: only count them, and log the count now and then
-local currentUpdates, currentLoggedAt = 0, 0
-function handlers.DAMAGE_METER_CURRENT_SESSION_UPDATED()
-	currentUpdates = currentUpdates + 1
-	if GetTime() - currentLoggedAt >= 30 then
-		log("DAMAGE_METER_CURRENT_SESSION_UPDATED x%d", currentUpdates)
-		currentUpdates, currentLoggedAt = 0, GetTime()
+-- Both fire on every update while fighting: only count them, and log the counts now and then
+local updates, updatesLoggedAt = {}, 0
+local function countUpdate(event)
+	updates[event] = (updates[event] or 0) + 1
+	if GetTime() - updatesLoggedAt >= 30 then
+		local parts = {}
+		for e, n in pairs(updates) do parts[#parts + 1] = ("%s x%d"):format(e, n) end
+		table.sort(parts)
+		log("METER EVENTS %s", table.concat(parts, ", "))
+		updates, updatesLoggedAt = {}, GetTime()
 	end
 end
+function handlers.DAMAGE_METER_COMBAT_SESSION_UPDATED() countUpdate("DAMAGE_METER_COMBAT_SESSION_UPDATED") end
+function handlers.DAMAGE_METER_CURRENT_SESSION_UPDATED() countUpdate("DAMAGE_METER_CURRENT_SESSION_UPDATED") end
 
 function handlers.DAMAGE_METER_RESET() log("DAMAGE_METER_RESET") end
 
@@ -562,8 +579,7 @@ SlashCmdList.DGKSPROBE = function(msg)
 		snapshot("manual")
 		checkScore("manual")
 		checkStats("manual")
-		meterDumpAt = -100
-		dumpMeter("manual")
+		dumpMeter("manual", true)
 		say("logged the units around you, the scoreboard, the statistics and the damage meter")
 	elseif cmd == "clear" then
 		wipe(state.log)

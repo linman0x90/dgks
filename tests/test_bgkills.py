@@ -141,5 +141,104 @@ L.execute("FIRE('PARTY_KILL', 'Player-1-ME', 'Player-2-ZED'); RUN_TIMERS()")
 check("a visible PARTY_KILL of ours is recorded as before, not as likely",
       len(L.eval("RECORDS")) == 1 and L.eval("RECORDS[1].flags") is None)
 
+# ---------- Nameplates: the victim's plate vanishes dead just after the kill ----------
+L.execute("""UnitIsDeadOrGhost = function(u) return UNITS[u] ~= nil and UNITS[u].dead == true end
+GetStatistic = function(id)
+  if id == 1491 then return KB == 0 and "--" or tostring(KB) end
+  if id == 588 then return tostring(HK) end
+end
+FIRE('ZONE_CHANGED_NEW_AREA')""")
+plate = L.eval("function(u) dgks.BGKills.OnPlateRemoved(u) end")
+
+
+def plate_kill(target_units, plates, hk_rise=True, kb_rise=True):
+    """A hidden kill; plates = [(delay, name, extra)] vanish after it, dead unless extra says otherwise."""
+    L.execute("RECORDS, KILLSHOTS = {}, {}")
+    L.execute("UNITS = " + target_units)
+    if kb_rise:
+        L.execute("KB = KB + 1")
+    L.execute("FIRE('PARTY_KILL', SECRET, SECRET)")
+    if hk_rise:
+        L.execute("C_Timer.After(0.1, function() HK = HK + 1 end)")
+    for i, (delay, name, extra) in enumerate(plates):
+        L.execute(f"C_Timer.After({delay}, function() UNITS.nameplate{20 + i} = {{ name = '{name}', realm = 'Other', player = true, enemy = true, dead = true, level = 58 {extra} }}; "
+                  f"PLATE('nameplate{20 + i}'); UNITS.nameplate{20 + i} = nil end)")
+    L.execute("RUN_TIMERS(); NOW = NOW + 10")
+    return [dict(r.items()) for r in L.eval("RECORDS").values()]
+
+
+L.globals().PLATE = plate
+TARGET = "{ target = { name = 'Ady', realm = 'Other', player = true, enemy = true, level = 60, class = 'MAGE' } }"
+recs = plate_kill(TARGET, [(0.24, "Ady", "")])
+check("our target's plate vanishes dead: a confirmed kill, not marked likely",
+      len(recs) == 1 and recs[0]["o"] == "Ady-Other" and recs[0]["flags"]["guessed"] is None and recs[0]["flags"]["level"] == 58, recs)
+recs = plate_kill(TARGET, [(0.21, "Easy", ""), (0.24, "Ady", "")])
+check("several dead plates: our target among them wins", len(recs) == 1 and recs[0]["o"] == "Ady-Other" and recs[0]["flags"]["guessed"] is None, recs)
+recs = plate_kill("{}", [(0.28, "Akoa", ""), (1.5, "Bloed", "")], hk_rise=False)
+check("no target, no honorable kill (we had died): the dead plate names the victim, marked likely",
+      len(recs) == 1 and recs[0]["o"] == "Akoa-Other" and recs[0]["flags"]["guessed"] == 1, recs)
+recs = plate_kill(TARGET, [], hk_rise=False)
+check("no honorable kill and no dead plate: an NPC kill, nothing recorded", recs == [], recs)
+recs = plate_kill(TARGET, [(0.2, "Ady", "")], kb_rise=False)
+check("a dead plate on a groupmate's kill: nothing recorded", recs == [], recs)
+recs = plate_kill(TARGET, [(0.2, "Ady", ", dead = false")])
+check("a plate that vanished alive (out of view) is not a death: target recorded as likely",
+      len(recs) == 1 and recs[0]["flags"]["guessed"] == 1, recs)
+recs = plate_kill(TARGET, [(0.2, "Ady", ", enemy = false")])
+check("a friendly player's plate is ignored", len(recs) == 1 and recs[0]["flags"]["guessed"] == 1, recs)
+recs = plate_kill("{}", [(1.2, "Late", "")], hk_rise=True)
+check("a plate gone dead after the window does not count: nobody to name", recs == [], recs)
+L.execute("INSTANCE = 'party'")
+L.execute("UNITS = { nameplate1 = { name = 'X', realm = 'Y', player = true, enemy = true, dead = true } }; PLATE('nameplate1')")
+L.execute("INSTANCE = 'pvp'")
+recs = plate_kill("{}", [], hk_rise=True)
+check("plates outside a battleground are not kept", recs == [], recs)
+
+# ---------- Our deaths: the damage meter names the killer the Death Recap hides ----------
+L.execute(open(os.path.join(REPO, "dgks_deathrecap.lua"), encoding="utf-8").read())
+L.execute(r"""
+dgks.db.profile.deathRecap = false; dgks.db.profile.guessKiller = false
+Enum = { DamageMeterType = { Deaths = 9 }, DamageMeterSessionType = { Overall = 0, Current = 1 } }
+RECAP = SECRET
+RECAPS = {}
+C_DeathRecap.GetRecapEvents = function(id) if id then return RECAPS[id] end return RECAP end
+METER = SECRET
+C_DamageMeter = { GetCombatSessionFromType = function(st, mt) if mt ~= 9 then return nil end return METER end }
+function DIE() RECORDS = {}; FIRE('PLAYER_DEAD'); RUN_TIMERS() end
+""")
+
+
+def death(meter, recaps="{}"):
+    L.execute("RECAPS = " + recaps)
+    L.execute("METER = " + meter)
+    L.execute("DIE(); NOW = NOW + 60")
+    return [dict(r.items()) for r in L.eval("RECORDS").values()]
+
+
+ME_DIED = "{ durationSeconds = 3384, combatSources = { { name = 'Civ Sr', deathTimeSeconds = 3368, deathRecapID = 387 }, { name = 'Me', isLocalPlayer = true, deathTimeSeconds = 3378, deathRecapID = 386 } } }"
+CORRUPTION = "{ [386] = { { sourceName = 'Sirgoonie Dotsalot', spellName = 'Corruption', spellId = 172, amount = 359, overkill = 309 } } }"
+recs = death(ME_DIED, CORRUPTION)
+check("battleground death: the meter's recap names the killer", len(recs) == 1 and recs[0]["k"] == "D" and recs[0]["o"] == "Sirgoonie Dotsalot", recs)
+hit = dict(recs[0]["flags"]["hit"].items()) if recs and recs[0]["flags"] and recs[0]["flags"]["hit"] else None
+check("and the killing blow: Corruption, 359", hit == {"ability": "Corruption", "spellId": 172, "amount": 359}, hit)
+recs = death(ME_DIED, CORRUPTION)
+check("the same entry is never used for a second death: hidden as before", len(recs) == 1 and recs[0]["o"] == "Hidden by the game", recs)
+recs = death("{ durationSeconds = 3500, combatSources = { { name = 'Me', isLocalPlayer = true, deathTimeSeconds = 3400, deathRecapID = 390 } } }",
+             "{ [390] = { { sourceName = 'Old Death' } } }")
+check("our entry from long ago is not this death", len(recs) == 1 and recs[0]["o"] == "Hidden by the game", recs)
+# The meter is secret for a moment, then lists the death
+L.execute("C_Timer.After(1.2, function() METER = { durationSeconds = 10, combatSources = { { isLocalPlayer = true, deathTimeSeconds = 9, deathRecapID = 391 } } } end)")
+recs = death("SECRET", "{ [391] = { { sourceName = 'Late Killer', event = 'SWING_DAMAGE', amount = 80 } } }")
+check("the meter readable a moment later: still found, melee killing blow",
+      len(recs) == 1 and recs[0]["o"] == "Late Killer" and dict(recs[0]["flags"]["hit"].items()) == {"ability": "Melee", "amount": 80}, recs)
+recs = death("{ durationSeconds = 10, combatSources = { { isLocalPlayer = true, deathTimeSeconds = 9, deathRecapID = 392 } } }",
+             "{ [392] = { { sourceName = 'Sneaky', hideCaster = true, spellName = 'Ambush', amount = 900 } } }")
+check("a hidden caster: no killer name, hidden as before", len(recs) == 1 and recs[0]["o"] == "Hidden by the game", recs)
+L.execute("INSTANCE = 'party'")
+recs = death("{ durationSeconds = 10, combatSources = { { isLocalPlayer = true, deathTimeSeconds = 9, deathRecapID = 393 } } }",
+             "{ [393] = { { sourceName = 'Boss' } } }")
+check("outside a battleground the meter is not used", len(recs) == 1 and recs[0]["o"] == "Hidden by the game", recs)
+L.execute("INSTANCE = 'pvp'")
+
 print("FAILS:", fails)
 sys.exit(1 if fails else 0)

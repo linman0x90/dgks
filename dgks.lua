@@ -1835,7 +1835,8 @@ function dgks:PlayerDeath(myKiller, flags, guid, killerIsPlayer)
 	if self:LogsPvE() or self:KilledByPlayer(myKiller, flags, guid, killerIsPlayer) then
 		local recFlags = flags
 		local ok, hit = pcall(dgks.KillingBlowOf, dgks, recap)
-		if ok and hit then
+		-- A killing blow the caller already has (the damage meter's, in a battleground) comes first
+		if ok and hit and not (flags and flags.hit) then
 			recFlags = {}
 			for k, v in pairs(flags or {}) do recFlags[k] = v end
 			recFlags.hit = hit
@@ -2477,6 +2478,19 @@ if classic then
 			-- A failing lookup must not leave deathPending set, or later deaths would be ignored
 			local ok, killer, reason = pcall(dgks.GetRecapKiller, dgks)
 			if not ok then killer, reason = nil, "pending" end
+			-- Hidden by the game (a battleground): Blizzard's damage meter may still name the killer
+			if reason == "secret" and dgks.BGKills then
+				local mok, mKiller, mHit, mState = pcall(dgks.BGKills.MeterDeath, dgks.BGKills)
+				if mok and mKiller then
+					deathPending = false
+					dgks:PlayerDeath(mKiller, mHit and { hit = mHit } or nil)
+					return
+				end
+				if mok and mState == "pending" and attempts < 10 then
+					C_Timer.After(0.5, resolveKiller)
+					return
+				end
+			end
 			-- Only an empty recap is worth waiting for; give it up to 5 seconds
 			if reason ~= "pending" or attempts >= 10 then
 				deathPending = false
