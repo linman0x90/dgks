@@ -45,5 +45,6 @@ They work from any folder. Each test prints PASS or FAIL for each check and exit
 | `test_recap_window.py` | The death recap: rows, times, crits, school and health colours, the killing-blow row and the Compact view |
 | `test_bgprobe.py` | The battleground probe (development copies only): whether each PARTY_KILL with secret GUIDs was ours, from the Battleground Killing Blows statistic; which enemy player around us died; logging only in battlegrounds and arenas; never stopping on an error |
 | `test_recap_close.py` | The death recap closes when you're alive again, but not when you release to a ghost |
+| `test_version_check.py` | The version check: one reply per player per check whatever channels they heard it on, and none to ourselves |
 
 `names_prelude.py` loads dgks.lua's name helpers into tests that load a single module without dgks.lua.
