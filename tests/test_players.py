@@ -253,7 +253,7 @@ row = [strip(c) for c in list(L.eval("ROWS").values())[0]["cells"].values()]
 check("likely battleground kill: row shows the level and (likely)", row[2] == "59 Sdot-Other (likely)", row)
 lines = tooltip_of()
 check("likely battleground kill: tooltip says likely victim, not likely killer",
-      any(l.startswith("Likely victim: your target") for l in lines) and not any("Likely killer" in l for l in lines), lines)
+      any(l.startswith("Likely victim: your target, or an enemy player seen dying, as your killing blow landed.") for l in lines) and not any("Likely killer" in l for l in lines), lines)
 
 # Killer no longer visible: the level comes from the player cache
 L.execute("""UNITS.mouseover = { player = true, guid = 'Player-1-CARA', name = 'Cara', realm = 'Realm', class = 'MAGE', race = 'Gnome', level = 75 }
