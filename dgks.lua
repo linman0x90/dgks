@@ -1504,16 +1504,8 @@ function dgks:KillshotTX(txvictim,txtimestamp,txvictimGUID,flags)
 	deathstreak = 0
 	
 	-- NPC killshots (the "Trigger off NPC/PVE Killshots" option) go to history only with PvE logging on.
-	-- Recorded first, so the "killed N times" line counts this kill.
+	-- Recorded once, and first, so the "killed N times" line counts this kill.
 	justRecorded = nil
-	if txvictimGUID == nil or isPlayerGUID(txvictimGUID) or self:LogsPvE() then
-		justRecorded = self.History:Record("K", txvictim, txvictimGUID, streak, multikill)
-	end
-	-- Handle it locally first: sounds and text must not depend on our own broadcast coming back
-	-- (it does not when we are in no guild or group, or when addon messages are locked down).
-	self:ProcessKillshot("dgks", playerName, txvictim, txtimestamp, streak, multikill, true, txvictimGUID)
-	justRecorded = nil
-	-- NPC killshots (the "Trigger off NPC/PVE Killshots" option) go to history only with PvE logging on
 	if txvictimGUID == nil or isPlayerGUID(txvictimGUID) or self:LogsPvE() then
 		-- The killing blow, where we saw it land (Classic's combat log), added to any flags given
 		local hit = lastHitOn(txvictimGUID)
@@ -1522,8 +1514,12 @@ function dgks:KillshotTX(txvictim,txtimestamp,txvictimGUID,flags)
 			for k, v in pairs(flags or {}) do withHit[k] = v end
 			flags = withHit
 		end
-		self.History:Record("K", txvictim, txvictimGUID, streak, multikill, flags)
+		justRecorded = self.History:Record("K", txvictim, txvictimGUID, streak, multikill, flags)
 	end
+	-- Handle it locally first: sounds and text must not depend on our own broadcast coming back
+	-- (it does not when we are in no guild or group, or when addon messages are locked down).
+	self:ProcessKillshot("dgks", playerName, txvictim, txtimestamp, streak, multikill, true, txvictimGUID)
+	justRecorded = nil
 
 	-- Then broadcast our Killshot to other dgks users. Our own echo is dropped in OnCommReceived.
 	self:SendCM("dgks",dgks:Serialize(playerName,txvictim,txtimestamp,streak,multikill))
@@ -1859,11 +1855,25 @@ function dgks:PlayerDeath(myKiller, flags, guid, killerIsPlayer)
 	deathstreak = deathstreak + 1;
 	if (deathstreak > dgks.db.profile.maxdeathstreak) then dgks.db.profile.maxdeathstreak = deathstreak end
 	if (myKiller == nil) then myKiller = "Unknown Entity" end
+	-- The recap of this death, collected once: it gives history the killing blow, then is shown
+	local recap
+	if dgks.CollectDeathRecap then
+		local ok, r = pcall(dgks.CollectDeathRecap, dgks)
+		if ok then recap = r end
+	end
 	-- History keeps deaths to players; deaths to NPCs and the environment only with PvE logging on.
 	-- Recorded before the chat line, so its count includes this death.
 	local rec
 	if self:LogsPvE() or self:KilledByPlayer(myKiller, flags, guid, killerIsPlayer) then
-		rec = dgks.History:Record("D", myKiller, guid, nil, nil, flags)
+		local recFlags = flags
+		local ok, hit = pcall(dgks.KillingBlowOf, dgks, recap)
+		-- A killing blow the caller already has (the damage meter's, in a battleground) comes first
+		if ok and hit and not (flags and flags.hit) then
+			recFlags = {}
+			for k, v in pairs(flags or {}) do recFlags[k] = v end
+			recFlags.hit = hit
+		end
+		rec = dgks.History:Record("D", myKiller, guid, nil, nil, recFlags)
 	end
 	if (dgks.db.profile.dochatbox) then
 		if flags and flags.unknown then
@@ -2498,6 +2508,19 @@ if classic then
 			-- A failing lookup must not leave deathPending set, or later deaths would be ignored
 			local ok, killer, reason = pcall(dgks.GetRecapKiller, dgks)
 			if not ok then killer, reason = nil, "pending" end
+			-- Hidden by the game (a battleground): Blizzard's damage meter may still name the killer
+			if reason == "secret" and dgks.BGKills then
+				local mok, mKiller, mHit, mState = pcall(dgks.BGKills.MeterDeath, dgks.BGKills)
+				if mok and mKiller then
+					deathPending = false
+					dgks:PlayerDeath(mKiller, mHit and { hit = mHit } or nil)
+					return
+				end
+				if mok and mState == "pending" and attempts < 10 then
+					C_Timer.After(0.5, resolveKiller)
+					return
+				end
+			end
 			-- Only an empty recap is worth waiting for; give it up to 5 seconds
 			if reason ~= "pending" or attempts >= 10 then
 				deathPending = false

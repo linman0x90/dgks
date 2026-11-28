@@ -488,8 +488,8 @@ end
 -- flags (optional): { unknown = true } when opponent is a reason, not a name;
 -- { hit = { ability, spellId, amount } } for the killing blow, where the game reported it.
 -- { guessed = n } when opponent is a guess: on a death, made from n enemy players targeting us; on a
--- kill (K), our target when a battleground hid the victim. A guess may add level and class, read
--- from the unit, for when the player cache does not know the opponent.
+-- kill (K), our target when a battleground hid the victim. { level, class } read from the unit, for
+-- when the player cache does not know the opponent.
 -- Called from the kill and death handlers, so a failure here must never reach them.
 function H:Record(kind, opponent, guid, streak, multikill, flags)
 	local ok, result = pcall(H.RecordUnsafe, H, kind, opponent, guid, streak, multikill, flags)
@@ -569,6 +569,9 @@ function H:RecordUnsafe(kind, opponent, guid, streak, multikill, flags)
 	if flags and type(flags.guessed) == "number" then
 		rec.g = 1
 		rec.gn = math.max(1, math.min(40, math.floor(flags.guessed)))
+	end
+	-- Level and class read from the unit (battleground kills), for when the player cache does not know them
+	if flags then
 		if not rec.ol and usable(flags.level, "number") and flags.level ~= 0 then rec.ol = flags.level end
 		if not rec.oc and usable(flags.class, "string") and flags.class ~= "" then rec.oc = flags.class end
 	end
