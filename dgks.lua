@@ -543,6 +543,23 @@ local function giveBroadcasts()
 				width = "full",
 				order = 90
 			},
+			ignoreOtherBGs = {
+				type = 'toggle',
+				name = 'Ignore guild killshots from other battlegrounds',
+				desc = "Don't show killshots and duel results from guild members who are in a battleground you are not in. "
+					.. "Their kills still go into guild history.",
+				get = function()
+					return dgks.db.profile.ignoreOtherBGs
+				end,
+				set = function(info, v)
+					dgks.db.profile.ignoreOtherBGs = v
+				end,
+				disabled = function()
+					return not dgks.db.profile.dobroadcasts or not dgks.db.profile.doguild
+				end,
+				width = "full",
+				order = 95
+			},
 			doraid = {
 				type = 'toggle',
 				name = 'Broadcasts to/from Party/Raid/Instance',
@@ -1141,6 +1158,7 @@ local defaults = {
 		docombattext = true,
 		dobroadcasts = true,
 		doguild = true,
+		ignoreOtherBGs = false,
 		dobg = true,
 		doraid = true,
 		dofriends = true,
@@ -1460,6 +1478,78 @@ function dgks:PlayerLoss(myKiller)
 	end
 end
 
+-- Battleground zone names, for telling from the guild roster that a member is in a battleground.
+-- The game's own list (localized) where it has one, plus the English names as a fallback.
+local BATTLEGROUND_ZONES = {
+	"Warsong Gulch", "Arathi Basin", "Alterac Valley", "Eye of the Storm", "Strand of the Ancients",
+	"Isle of Conquest", "Twin Peaks", "The Battle for Gilneas", "Battle for Gilneas", "Silvershard Mines",
+	"Temple of Kotmogu", "Deepwind Gorge", "Seething Shore", "Deephaul Ravine", "Korrak's Revenge",
+	"Darkspear Islands",
+}
+local battlegroundZones
+
+local function isBattlegroundZone(zone)
+	if isSecret(zone) or type(zone) ~= "string" or zone == "" then return false end
+	if not battlegroundZones then
+		local names, fromGame = {}, false
+		for _, n in ipairs(BATTLEGROUND_ZONES) do names[n] = true end
+		if type(GetNumBattlegroundTypes) == "function" and type(GetBattlegroundInfo) == "function" then
+			local ok, count = pcall(GetNumBattlegroundTypes)
+			if ok and not isSecret(count) and type(count) == "number" then
+				for i = 1, count do
+					local ok2, name = pcall(GetBattlegroundInfo, i)
+					if ok2 and not isSecret(name) and type(name) == "string" and name ~= "" then
+						names[name] = true
+						fromGame = true
+					end
+				end
+			end
+		end
+		-- Keep asking the game until it answers (its list may not be loaded at login)
+		if fromGame then battlegroundZones = names end
+		return names[zone] == true
+	end
+	return battlegroundZones[zone] == true
+end
+
+-- A name without its realm: "Name-Realm" -> "Name"; Forever's "First Surname" stays whole
+local function withoutRealm(name)
+	return name:match("^(.-)%-[^%-]*$") or name
+end
+
+-- The zone the guild roster shows for this member, or nil
+local function rosterZone(sender)
+	if type(GetNumGuildMembers) ~= "function" or type(GetGuildRosterInfo) ~= "function" then return nil end
+	local ok, count = pcall(GetNumGuildMembers)
+	if not ok or isSecret(count) or type(count) ~= "number" then return nil end
+	local want = withoutRealm(sender)
+	for i = 1, count do
+		local ok2, name, _, _, _, _, zone = pcall(GetGuildRosterInfo, i)
+		if ok2 and not isSecret(name) and type(name) == "string" and (name == sender or withoutRealm(name) == want) then
+			if isSecret(zone) then return nil end
+			return zone
+		end
+	end
+	return nil
+end
+
+-- Is this guild member in a battleground we are not in? In one with us they are in our group (the
+-- battleground's raid). The roster updates every so often, so a member who has just gone in or
+-- come out may be judged by where they were.
+function dgks:InOtherBattleground(sender)
+	if isSecret(sender) or type(sender) ~= "string" then return false end
+	if not isBattlegroundZone(rosterZone(sender)) then return false end
+	for _, name in ipairs({ sender, withoutRealm(sender) }) do
+		for _, fn in ipairs({ UnitInRaid, UnitInParty }) do
+			if type(fn) == "function" then
+				local ok, v = pcall(fn, name)
+				if ok and not isSecret(v) and v then return false end
+			end
+		end
+	end
+	return true
+end
+
 function dgks:OnCommReceived(cchan, message, distribution, sender)
 	
 	--If broadcast type is off return
@@ -1500,6 +1590,8 @@ function dgks:OnCommReceived(cchan, message, distribution, sender)
 		-- is recognised by who sent it, not by the killer name inside the message, so that another
 		-- player who shares our name is still heard.
 		if dgks:IsOwnSender(sender) then return end
+		-- A guild member's killshot from a battleground we are not in, when that is switched off
+		if distribution == "GUILD" and dgks.db.profile.ignoreOtherBGs and dgks:InOtherBattleground(sender) then return end
 		--Verify we have a valid event
 		local ok,rxkiller,rxvictim,rxtimestamp,rxstreak,rxmultikill = dgks:Deserialize(message)
 		if ok then
