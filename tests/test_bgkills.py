@@ -182,10 +182,39 @@ check("no honorable kill and no dead plate: an NPC kill, nothing recorded", recs
 recs = plate_kill(TARGET, [(0.2, "Ady", "")], kb_rise=False)
 check("a dead plate on a groupmate's kill: nothing recorded", recs == [], recs)
 recs = plate_kill(TARGET, [(0.2, "Ady", ", dead = false")])
-check("a plate that vanished alive (out of view) is not a death: target recorded as likely",
-      len(recs) == 1 and recs[0]["flags"]["guessed"] == 1, recs)
+check("a plate that vanished alive (out of view) is not a death; our target is still alive: nothing recorded", recs == [], recs)
 recs = plate_kill(TARGET, [(0.2, "Ady", ", enemy = false")])
-check("a friendly player's plate is ignored", len(recs) == 1 and recs[0]["flags"]["guessed"] == 1, recs)
+check("a friendly player's plate is ignored", recs == [], recs)
+
+# The false kills of the first 12.0.016 game: our NPC kill, honor from a groupmate's player kill
+# nearby, and our target still alive on screen. Not a kill of our target.
+recs = plate_kill(TARGET, [], hk_rise=True)
+check("honor but our target still there and alive: nothing recorded", recs == [], recs)
+L.execute("C_Timer.After(0.3, function() UNITS.target.dead = true end)")
+recs = plate_kill(TARGET, [], hk_rise=True)
+check("honor and our target now dead, no plate seen: our target, marked likely",
+      len(recs) == 1 and recs[0]["o"] == "Ady-Other" and recs[0]["flags"]["guessed"] == 1 and recs[0]["flags"]["class"] == "MAGE", recs)
+
+# At NAME_PLATE_UNIT_REMOVED the unit may no longer "exist"; the plate still counts
+L.execute("local ue = UnitExists; UnitExists = function(u) if u:find('^nameplate') then return false end return ue(u) end; REAL_UE = ue")
+recs = plate_kill(TARGET, [(0.24, "Ady", "")])
+check("a dead plate counts even when the unit no longer exists", len(recs) == 1 and recs[0]["flags"]["guessed"] is None, recs)
+L.execute("UnitExists = REAL_UE")
+
+# The probe's trace: each step of the decision
+L.execute("TRACE = {}; dgks.BGKills.trace = function(m) TRACE[#TRACE+1] = m end")
+plate_kill(TARGET, [(0.24, "Ady", ""), (0.3, "Walker", ", dead = false"), (0.35, "Pal", ", enemy = false")])
+tr = list(L.eval("TRACE").values())
+check("trace: the hidden kill, each plate and the verdict",
+      any("hidden kill; target Ady-Other" in m for m in tr) and any("Ady-Other, DEAD, kept" in m for m in tr)
+      and any("Walker-Other, alive (left view)" in m for m in tr) and any("ignored (not an enemy)" in m for m in tr)
+      and any("ours; honor yes; dead plates: Ady-Other(+0.24s); target: Ady-Other" in m for m in tr)
+      and any("recorded Ady-Other (confirmed)" in m for m in tr), tr)
+L.execute("TRACE = {}")
+plate_kill(TARGET, [], hk_rise=False, kb_rise=False)
+tr = list(L.eval("TRACE").values())
+check("trace: a groupmate's kill", any("not ours (killing blows still" in m for m in tr), tr)
+L.execute("dgks.BGKills.trace = nil")
 recs = plate_kill("{}", [(1.2, "Late", "")], hk_rise=True)
 check("a plate gone dead after the window does not count: nobody to name", recs == [], recs)
 L.execute("INSTANCE = 'party'")

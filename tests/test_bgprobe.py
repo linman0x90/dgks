@@ -90,7 +90,7 @@ GetStatistic = function(id) if id == 1491 then return BGKB == 0 and "--" or tost
 GetPVPSessionStats = function() return 0, 0 end
 GetBuildInfo = function() return "1.15.8" end
 SlashCmdList = {}
-dgks = { db = { global = {} } }
+dgks = { db = { global = {} }, BGKills = {} }
 ''')
 L.execute(open(os.path.join(REPO, "dgks_bgprobe.lua"), encoding="utf-8").read())
 L.execute('FIRE("PLAYER_LOGIN")')
@@ -106,6 +106,8 @@ check("events are ignored while off", len(lines()) == 0)
 probe("on")
 check("on: build and where we are logged", "PROBE ON (1.15.8" in text() and "instance=pvp zone=Alterac Valley" in text(), text())
 check("the combat log's registration is never touched (a protected action)", L.eval("FORBIDDEN") is None)
+L.execute('dgks.BGKills.trace("kill #1: ours")')
+check("the battleground kill code's steps are logged while on", lines()[-1].endswith("BGKILLS kill #1: ours"), lines()[-1])
 check("entering: the statistics are read ('--' counts as 0)", "BG KB=0" in text(), text())
 
 # 1. Our kill: the statistic rises with PARTY_KILL, and our target dies a moment later
@@ -268,6 +270,7 @@ probe("off")
 n = len(lines())
 L.execute('FIRE("PARTY_KILL", SECRET, SECRET)')
 check("off: logging stops", len(lines()) == n and state()["on"] is False)
+check("off: the trace hook is removed", L.eval("dgks.BGKills.trace") is None)
 probe("clear")
 check("clear empties the log", len(lines()) == 0)
 

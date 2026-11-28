@@ -542,6 +542,12 @@ local function start()
 	-- No test of the combat log here: it is closed to addons on retail, and touching its registration is
 	-- a protected action (ADDON_ACTION_FORBIDDEN), which pcall cannot catch
 	log("C_DamageMeter: %s", type(C_DamageMeter) == "table" and "present" or "missing")
+	-- The battleground kill and death code's own steps: plates seen, each kill's verdict, our deaths
+	if dgks.BGKills then
+		dgks.BGKills.trace = function(msg)
+			if state and state.on and inPvPInstance() then log("BGKILLS %s", msg) end
+		end
+	end
 	startTicker()
 	where("probe started")
 end
@@ -573,6 +579,7 @@ SlashCmdList.DGKSPROBE = function(msg)
 	elseif cmd == "off" then
 		log("PROBE OFF")
 		state.on = false
+		if dgks.BGKills then dgks.BGKills.trace = nil end
 		say(("off, %d lines logged."):format(#state.log))
 	elseif cmd == "snap" then
 		if not state.on then say("turn it on first: /dgksprobe on") return end
