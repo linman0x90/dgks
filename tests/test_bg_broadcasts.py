@@ -91,5 +91,33 @@ check("a battleground the game names in another language: ignored", not shown("d
 L.execute("dgks.db.profile.ignoreOtherBGs = false")
 check("option off: everything is shown, as before", shown("dgks", "Bob-Realm") and shown("dgksDUEL", "Pink Tonic"))
 
+# The game blocks addon messages in battlegrounds: no sends, and the version check says why
+L.execute(r"""
+SENTCM = {}
+function dgks:SendCommMessage(prefix, text, dist) SENTCM[#SENTCM+1] = prefix .. ":" .. dist end
+function dgks:RefreshSettings() end
+dgks.db.profile.dobroadcasts = true; dgks.db.profile.doguild = true
+dgks.db.profile.doraid = false; dgks.db.profile.dofriends = false; dgks.db.profile.dobg = false
+LOCKED = true
+C_ChatInfo = { InChatMessagingLockdown = function() return LOCKED end }
+""")
+L.execute("dgks:SendCM('dgks', 'x')")
+check("messages blocked: a killshot is not sent", len(L.eval("SENTCM")) == 0)
+L.execute("dgks:VersionCheck()")
+text = L.eval("dgks:VersionCheckText()")
+check("messages blocked: the version check asks no one and says why",
+      len(L.eval("SENTCM")) == 0 and "blocks addon messages here" in text and "Waiting" not in text, text)
+L.execute("LOCKED = false; dgks:SendCM('dgks', 'x')")
+check("not blocked: sent as before", list(L.eval("SENTCM").values()) == ["dgks:GUILD"], list(L.eval("SENTCM").values()))
+L.execute("SENTCM = {}; dgks:VersionCheck()")
+check("not blocked: the version check goes out and waits for replies",
+      list(L.eval("SENTCM").values()) == ["dgksV:GUILD"] and "Waiting for replies" in L.eval("dgks:VersionCheckText()"))
+L.execute("SENTCM = {}; C_ChatInfo = nil; dgks:SendCM('dgks', 'x')")
+check("a client without the lockdown API sends as before", len(L.eval("SENTCM")) == 1)
+L.execute("SENTCM = {}; C_ChatInfo = { InChatMessagingLockdown = function() return SECRET end }; dgks:SendCM('dgks', 'x')")
+check("a hidden answer counts as not blocked", len(L.eval("SENTCM")) == 1)
+desc = bc["dobg"]["desc"]
+check("the Battleground option says the game blocks messages there", "blocks addon messages inside battlegrounds" in desc, desc)
+
 print("FAILS:", fails)
 sys.exit(1 if fails else 0)

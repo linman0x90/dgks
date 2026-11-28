@@ -50,10 +50,23 @@ function dgks:Serialize() return '' end
 ''')
 L.execute(open(os.path.join(REPO, "dgks_bgkills.lua"), encoding="utf-8").read())
 L.execute("FIRE('ZONE_CHANGED_NEW_AREA')")  # entering the battleground: start from KB = 17
+L.execute("UnitIsDeadOrGhost = function(u) return UNITS[u] ~= nil and UNITS[u].dead == true end")
+# The victim (our target, else soft target) dies: their plate goes away dead 0.2 s after the kill
+VICTIM_PLATE = r"""for _, u in ipairs({ 'target', 'softenemy' }) do
+  local x = UNITS[u]
+  if x then
+    C_Timer.After(0.2, function()
+      UNITS.nameplate30 = { name = x.name, realm = x.realm, player = x.player, enemy = x.enemy, level = x.level, class = x.class, dead = true }
+      dgks.BGKills.OnPlateRemoved('nameplate30'); UNITS.nameplate30 = nil
+    end)
+    break
+  end
+end"""
 
 
-def kill(setup="", kb_rise=True, hk_rise=True, units=None):
-    """A hidden PARTY_KILL; the statistics move as the probe saw: KB at once, HK 0.1 s later."""
+def kill(setup="", kb_rise=True, hk_rise=True, units=None, plate=True):
+    """A hidden PARTY_KILL; the statistics move as the probe saw: KB at once, HK 0.1 s later, and
+    (plate) the victim's nameplate going away dead 0.2 s later."""
     L.execute("RECORDS, KILLSHOTS = {}, {}")
     if units is not None:
         L.execute("UNITS = " + units)
@@ -63,6 +76,8 @@ def kill(setup="", kb_rise=True, hk_rise=True, units=None):
     L.execute("FIRE('PARTY_KILL', SECRET, SECRET)")
     if hk_rise:
         L.execute("C_Timer.After(0.1, function() HK = HK + 1 end)")
+    if plate:
+        L.execute(VICTIM_PLATE)
     L.execute("UNITS = {}")  # the target is gone a moment later, as in the probe
     L.execute("RUN_TIMERS(); NOW = NOW + 10")
     return [dict(r.items()) for r in L.eval("RECORDS").values()]
@@ -73,16 +88,18 @@ ENEMY = "{ target = { name = 'Sdot', realm = 'Other', player = true, enemy = tru
 recs = kill(units=ENEMY)
 check("our killing blow on a player: one kill of our target", len(recs) == 1 and recs[0]["k"] == "K" and recs[0]["o"] == "Sdot-Other", recs)
 flags = recs[0]["flags"] if recs else None
-check("recorded as likely, with the level and class read from the target",
-      flags is not None and flags["guessed"] == 1 and flags["level"] == 59 and flags["class"] == "ROGUE", flags and dict(flags.items()))
+check("confirmed (the target's plate went away dead), with the level and class read from the unit",
+      flags is not None and flags["guessed"] is None and flags["level"] == 59 and flags["class"] == "ROGUE", flags and dict(flags.items()))
 check("no GUID is claimed", recs and recs[0].get("guid") is None)
 check("announced like any killshot", list(L.eval("KILLSHOTS").values()) == ["Sdot-Other"])
+recs = kill(units=ENEMY, plate=False)
+check("no dead plate: nothing recorded, even with honor and the target gone", recs == [], recs)
 
 recs = kill(units="{ softenemy = { name = 'Round', realm = 'Other', player = true, enemy = true, level = 60 } }")
 check("no target: the soft target is the victim", len(recs) == 1 and recs[0]["o"] == "Round-Other", recs)
 
-recs = kill(units=ENEMY, hk_rise=False)
-check("killing blow without an honorable kill (an NPC): nothing recorded", recs == [], recs)
+recs = kill(units=ENEMY, hk_rise=False, plate=False)
+check("killing blow without an honorable kill or a dead plate (an NPC): nothing recorded", recs == [], recs)
 
 recs = kill(units=ENEMY, kb_rise=False)
 check("a groupmate's kill (the statistic does not move): nothing recorded", recs == [], recs)
@@ -101,10 +118,14 @@ check("after NPC and group kills, our next player kill is found again", len(recs
 L.execute("RECORDS, KILLSHOTS = {}, {}")
 L.execute("UNITS = " + ENEMY + "; KB = KB + 2")
 L.execute("FIRE('PARTY_KILL', SECRET, SECRET); FIRE('PARTY_KILL', SECRET, SECRET)")
+L.execute(VICTIM_PLATE)
+L.execute("C_Timer.After(0.25, function() UNITS.nameplate31 = { name = 'Other', realm = 'Other', player = true, enemy = true, dead = true }; dgks.BGKills.OnPlateRemoved('nameplate31') end)")
 L.execute("C_Timer.After(0.1, function() HK = HK + 2 end); UNITS = {}; RUN_TIMERS(); NOW = NOW + 10")
-check("two kills at once, both ours: two records", len(L.eval("RECORDS")) == 2)
+check("two kills at once, both ours, two dead plates: two records", len(L.eval("RECORDS")) == 2)
 L.execute("RECORDS = {}; UNITS = " + ENEMY + "; KB = KB + 1")
 L.execute("FIRE('PARTY_KILL', SECRET, SECRET); FIRE('PARTY_KILL', SECRET, SECRET)")
+L.execute(VICTIM_PLATE)
+L.execute("C_Timer.After(0.25, function() UNITS.nameplate31 = { name = 'Other', realm = 'Other', player = true, enemy = true, dead = true }; dgks.BGKills.OnPlateRemoved('nameplate31') end)")
 L.execute("C_Timer.After(0.1, function() HK = HK + 2 end); UNITS = {}; RUN_TIMERS(); NOW = NOW + 10")
 check("two kills at once, one ours: one record", len(L.eval("RECORDS")) == 1)
 
@@ -182,10 +203,38 @@ check("no honorable kill and no dead plate: an NPC kill, nothing recorded", recs
 recs = plate_kill(TARGET, [(0.2, "Ady", "")], kb_rise=False)
 check("a dead plate on a groupmate's kill: nothing recorded", recs == [], recs)
 recs = plate_kill(TARGET, [(0.2, "Ady", ", dead = false")])
-check("a plate that vanished alive (out of view) is not a death: target recorded as likely",
-      len(recs) == 1 and recs[0]["flags"]["guessed"] == 1, recs)
+check("a plate that vanished alive (out of view) is not a death; our target is still alive: nothing recorded", recs == [], recs)
 recs = plate_kill(TARGET, [(0.2, "Ady", ", enemy = false")])
-check("a friendly player's plate is ignored", len(recs) == 1 and recs[0]["flags"]["guessed"] == 1, recs)
+check("a friendly player's plate is ignored", recs == [], recs)
+
+# The false kills of the first 12.0.016 game: our NPC kill, honor from a groupmate's player kill
+# nearby, and our target still alive on screen. Not a kill of our target.
+recs = plate_kill(TARGET, [], hk_rise=True)
+check("honor but our target still there and alive: nothing recorded", recs == [], recs)
+L.execute("C_Timer.After(0.3, function() UNITS.target.dead = true end)")
+recs = plate_kill(TARGET, [], hk_rise=True)
+check("honor and our target now dead, but no plate seen: nothing recorded", recs == [], recs)
+
+# At NAME_PLATE_UNIT_REMOVED the unit may no longer "exist"; the plate still counts
+L.execute("local ue = UnitExists; UnitExists = function(u) if u:find('^nameplate') then return false end return ue(u) end; REAL_UE = ue")
+recs = plate_kill(TARGET, [(0.24, "Ady", "")])
+check("a dead plate counts even when the unit no longer exists", len(recs) == 1 and recs[0]["flags"]["guessed"] is None, recs)
+L.execute("UnitExists = REAL_UE")
+
+# The probe's trace: each step of the decision
+L.execute("TRACE = {}; dgks.BGKills.trace = function(m) TRACE[#TRACE+1] = m end")
+plate_kill(TARGET, [(0.24, "Ady", ""), (0.3, "Walker", ", dead = false"), (0.35, "Pal", ", enemy = false")])
+tr = list(L.eval("TRACE").values())
+check("trace: the hidden kill, each plate and the verdict",
+      any("hidden kill; target Ady-Other" in m for m in tr) and any("Ady-Other, DEAD, kept" in m for m in tr)
+      and any("Walker-Other, alive (left view)" in m for m in tr) and any("ignored (not an enemy)" in m for m in tr)
+      and any("ours; honor yes; dead plates: Ady-Other(+0.24s); target: Ady-Other" in m for m in tr)
+      and any("recorded Ady-Other (confirmed)" in m for m in tr), tr)
+L.execute("TRACE = {}")
+plate_kill(TARGET, [], hk_rise=False, kb_rise=False)
+tr = list(L.eval("TRACE").values())
+check("trace: a groupmate's kill", any("not ours (killing blows still" in m for m in tr), tr)
+L.execute("dgks.BGKills.trace = nil")
 recs = plate_kill("{}", [(1.2, "Late", "")], hk_rise=True)
 check("a plate gone dead after the window does not count: nobody to name", recs == [], recs)
 L.execute("INSTANCE = 'party'")

@@ -58,21 +58,29 @@ function B:Reset()
 	deadPlates = {}
 end
 
--- An enemy player unit as { name = "Name-Realm" (Forever: "First Surname-Realm"), level, class },
--- or nil. Names and levels stay readable in battlegrounds; GUIDs do not.
-local function enemyPlayer(unit)
-	if not (readable(UnitExists, unit) and readable(UnitIsPlayer, unit) and readable(UnitCanAttack, "player", unit)) then
-		return nil
-	end
+-- Step-by-step notes for the battleground probe (dgks_bgprobe.lua sets B.trace while it logs)
+local function trace(fmt, ...)
+	if B.trace then pcall(B.trace, fmt:format(...)) end
+end
+
+-- An enemy player unit as { unit, name = "Name-Realm" (Forever: "First Surname-Realm"), level,
+-- class }, or nil and why not. Names and levels stay readable in battlegrounds; GUIDs do not.
+-- leaving: the unit's nameplate is going away. The probe read name, player, enemy and dead state
+-- then, but never asked whether the unit still exists, so that is not required.
+local function enemyPlayer(unit, leaving)
+	if not leaving and readable(UnitExists, unit) ~= true then return nil, "no unit" end
+	if readable(UnitIsPlayer, unit) ~= true then return nil, "not a player" end
+	if readable(UnitCanAttack, "player", unit) ~= true then return nil, "not an enemy" end
 	local ok, name, realm = pcall(UnitName, unit)
-	if not ok or isSecret(name) or isSecret(realm) then return nil end
+	if not ok or isSecret(name) or isSecret(realm) then return nil, "name hidden" end
 	name, realm = dgks.SplitName(name, realm) -- Forever: "First Surname", no realm
-	if not name then return nil end
+	if not name then return nil, "no name" end
 	realm = realm or dgks.RealmName()
 	local level = readable(UnitLevel, unit)
 	local ok2, _, classFile = pcall(UnitClass, unit)
 	if not ok2 or isSecret(classFile) or type(classFile) ~= "string" then classFile = nil end
 	return {
+		unit = unit,
 		name = realm and (name .. "-" .. realm) or name,
 		level = type(level) == "number" and level or nil,
 		class = classFile,
@@ -88,6 +96,18 @@ local function candidate()
 	return nil
 end
 
+-- Is this candidate still alive and on the same unit? Shown in the probe's trace: a victim drops off
+-- our target as they die (the probe saw that within a quarter of a second).
+local function stillAlive(c)
+	local ok, name, realm = pcall(UnitName, c.unit)
+	if not ok or isSecret(name) or isSecret(realm) then return false end
+	name, realm = dgks.SplitName(name, realm)
+	if not name then return false end
+	realm = realm or dgks.RealmName()
+	if (realm and (name .. "-" .. realm) or name) ~= c.name then return false end
+	return readable(UnitIsDeadOrGhost, c.unit) == false
+end
+
 -- Enemy players whose nameplate went away while they were dead: { t, name, level, class }, newest
 -- last. A probe in Alterac Valley (Forever) saw the victim's plate vanish 0.1-0.3 s after each of
 -- our kills with UnitIsDeadOrGhost readable and true; plates of players who only walked out of
@@ -96,12 +116,22 @@ local PLATE_BEFORE, PLATE_AFTER = 0.3, DELAY -- the window around a kill, in sec
 
 local function onPlateRemoved(unit)
 	if isSecret(unit) or type(unit) ~= "string" or not inBattleground() then return end
-	if readable(UnitIsDeadOrGhost, unit) ~= true then return end
-	local p = enemyPlayer(unit)
-	if not p then return end
+	local ok, isPlayer = pcall(UnitIsPlayer, unit)
+	if ok and isPlayer == false then return end -- NPC plates: many, and never a victim we want
+	local dead = readable(UnitIsDeadOrGhost, unit)
+	local p, why = enemyPlayer(unit, true)
+	if not p then
+		trace("plate %s gone: ignored (%s)", unit, why)
+		return
+	end
+	if dead ~= true then
+		trace("plate %s gone: %s, alive (%s)", unit, p.name, dead == nil and "dead state hidden" or "left view")
+		return
+	end
 	p.t = GetTime()
 	deadPlates[#deadPlates + 1] = p
 	while #deadPlates > 40 do table.remove(deadPlates, 1) end
+	trace("plate %s gone: %s, DEAD, kept", unit, p.name)
 end
 
 local plateFrame = CreateFrame("Frame")
@@ -112,7 +142,7 @@ B.OnPlateRemoved = onPlateRemoved -- for tests
 -- The dead plates in a kill's window, oldest first, not yet claimed by another kill
 local function platesAround(t)
 	local found = {}
-	for i, p in ipairs(deadPlates) do
+	for _, p in ipairs(deadPlates) do
 		if not p.claimed and p.t >= t - PLATE_BEFORE and p.t <= t + PLATE_AFTER then found[#found + 1] = p end
 	end
 	return found
@@ -121,48 +151,67 @@ end
 -- Decides, a moment after a hidden PARTY_KILL, whether it was our killing blow on a player, and who died
 local function settle(kill)
 	local kb = statValue(KB_STAT)
-	if not kb or not kbBase then return end
+	if not kb or not kbBase then trace("kill #%d: killing blows not readable", kill.n) return end
 	if kb <= kbBase then
 		kbBase = kb -- a groupmate's kill (and keep in step if the statistic ever went down)
+		trace("kill #%d: not ours (killing blows still %d)", kill.n, kb)
 		return
 	end
 	kbBase = kbBase + 1 -- ours: claim one rise, so a second kill in the same moment gets the next
 	local plates = platesAround(kill.t)
 	local hk = statValue(HK_STAT)
 	local honor = hk and kill.hk and hk > kill.hk
-	-- A player kill: worth honor, or an enemy player died right then. (A kill landed after we died,
-	-- by a damage-over-time spell or our pet, gave no honor in the probe; NPC kills give neither.)
-	if not honor and #plates == 0 then return end
-	-- The victim: our target if their plate vanished dead (confirmed); else the first enemy whose
-	-- plate vanished dead; else our target, unconfirmed
+	local names = {}
+	for _, p in ipairs(plates) do names[#names + 1] = ("%s(%+.2fs)"):format(p.name, p.t - kill.t) end
+	local target = kill.victim
+	local targetAlive = target and stillAlive(target)
+	trace("kill #%d: ours; honor %s; dead plates: %s; target: %s", kill.n, honor and "yes" or "no",
+		#names > 0 and table.concat(names, ", ") or "none",
+		target and (target.name .. (targetAlive and " (still alive)" or " (gone or dead)")) or "none")
+	-- The victim: our target if their plate vanished dead (confirmed); else the first enemy whose plate
+	-- vanished dead (likely). Without a dead plate nothing is recorded: an honorable kill alone is not
+	-- enough, since a groupmate's player kill nearby gives us honor at the same moment as our own kill
+	-- of an NPC. In four probed games every real player kill of ours had a dead plate; the one kill
+	-- recorded without one (honor, target gone) was not on the scoreboard.
 	local victim, confirmed
-	if kill.victim then
+	if target then
 		for _, p in ipairs(plates) do
-			if p.name == kill.victim.name then victim, confirmed = p, true break end
+			if p.name == target.name then victim, confirmed = p, true break end
 		end
 	end
-	if not victim then victim = plates[1] or kill.victim end
-	if not victim then return end -- an honorable kill with nobody to name
+	if not victim then victim = plates[1] end
+	if not victim then
+		trace("kill #%d: not recorded (no dead plate: %s)", kill.n, honor and "honor, but no player seen dying"
+			or "no honor either: an NPC")
+		return
+	end
 	victim.claimed = true
-	local flags = { level = victim.level or (kill.victim and kill.victim.name == victim.name and kill.victim.level) or nil,
-		class = victim.class }
+	local sameAsTarget = target and target.name == victim.name
+	local flags = { level = victim.level or (sameAsTarget and target.level) or nil,
+		class = victim.class or (sameAsTarget and target.class) or nil }
 	if not confirmed then flags.guessed = 1 end
+	trace("kill #%d: recorded %s%s", kill.n, victim.name, confirmed and " (confirmed)" or " (likely)")
 	dgks:KillshotTX(victim.name, kill.t, nil, flags)
 end
 
 -- PARTY_KILL with secret GUIDs. Takes a note now, while our target is still the victim and the
 -- honorable kill has not arrived, and settles it after DELAY.
+local killCount = 0
 function B:OnHiddenKill()
 	if not inBattleground() then return end
 	if not kbBase then
 		-- No starting point yet (the statistic was not readable when we zoned in): start now. This
 		-- kill may already be counted in it, so it is let go.
 		B:Reset()
+		trace("hidden kill: no killing-blow count to compare with yet; starting from now")
 		return
 	end
-	local kill = { t = GetTime(), hk = statValue(HK_STAT), victim = candidate() }
+	killCount = killCount + 1
+	local kill = { n = killCount, t = GetTime(), hk = statValue(HK_STAT), victim = candidate() }
+	trace("kill #%d: hidden kill; target %s", kill.n, kill.victim and kill.victim.name or "none")
 	C_Timer.After(DELAY, function()
 		local ok, err = pcall(settle, kill)
+		if not ok then trace("kill #%d failed: %s", kill.n, tostring(err)) end
 		--@debug@
 		if not ok then dgks:Print("DEBUG: battleground kill failed: " .. tostring(err)) end
 		--@end-debug@
@@ -227,7 +276,7 @@ function B:MeterDeath()
 			usedRecaps[id] = true
 			local ok, events = pcall(C_DeathRecap.GetRecapEvents, id)
 			local ev = ok and type(events) == "table" and not isSecret(events) and events[1] or nil
-			if type(ev) ~= "table" or isSecret(ev) then return nil, nil, "none" end
+			if type(ev) ~= "table" or isSecret(ev) then trace("our death: recap %d hidden", id) return nil, nil, "none" end
 			local name = field(ev, "sourceName")
 			if field(ev, "hideCaster") == true or type(name) ~= "string" or name == "" then name = nil end
 			-- The killing blow, named the way the death recap window names it
@@ -238,10 +287,12 @@ function B:MeterDeath()
 				local ok2, h = pcall(dgks.KillingBlowOf, dgks, { rows = { row } })
 				if ok2 then hit = h end
 			end
-			if not name then return nil, hit, "none" end
+			if not name then trace("our death: recap %d has no killer name", id) return nil, hit, "none" end
+			trace("our death: killed by %s (%s)", name, hit and hit.ability or "no ability")
 			return name, hit, "found"
 		end
 	end
 	-- Not readable yet, or our entry not listed yet: both may change in a moment
+	trace("our death: not in the damage meter yet")
 	return nil, nil, "pending"
 end
