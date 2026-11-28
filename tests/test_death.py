@@ -75,7 +75,7 @@ end })
 ''')
     L.execute(src("dgks.lua"))
     L.execute(r'''
-dgks.db = { profile = { dochatbox = true, maxdeathstreak = 0, maxstreak = 0, killlog = {}, deathList = {},
+dgks.db = { profile = { dochatbox = true, maxdeathstreak = 0, maxstreak = 0,
   doscreenshotondeath = false, guessKiller = true, historyPve = true } }
 PRINTS, RECORDS = {}, {}
 function dgks:Print(m) PRINTS[#PRINTS+1] = m end

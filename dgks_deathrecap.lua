@@ -678,15 +678,39 @@ function dgks:RenderDeathRecap(recap)
 	--@end-debug@
 end
 
--- Called when the player dies. killer is the text recorded as the killer (or nil).
--- record: the history record of this death (for the killer's class and spec, and the location)
-function dgks:ShowDeathRecap(killer, record)
+-- The recap of the death that just happened: { rows (oldest first), source }. Our own combat log
+-- where we have one (Classic), else Blizzard's Death Recap. Reading the combat log empties it, so
+-- this is done once per death and the result handed to ShowDeathRecap.
+function dgks:CollectDeathRecap()
 	local rows = fromCombatLog(GetTime())
 	local source = "combatlog"
 	if #rows == 0 then
 		rows = fromDeathRecap()
 		source = "blizzard"
 	end
+	return { rows = rows, source = source }
+end
+
+-- The killing blow of a recap, for history: { ability, spellId, amount }, or nil. The newest row is
+-- the blow that killed us. Values the game hides are left out.
+function dgks:KillingBlowOf(recap)
+	local row = recap and recap.rows and recap.rows[#recap.rows]
+	if not row then return nil end
+	local name = ability(row)
+	local hit = {}
+	if type(name) == "string" and not isSecret(name) and name ~= "" then hit.ability = name end
+	if row.env == nil and not row.swing and num(row.spellId) then hit.spellId = row.spellId end
+	if num(row.amount) then hit.amount = row.amount end
+	if hit.ability == nil and hit.amount == nil then return nil end
+	return hit
+end
+
+-- Called when the player dies. killer is the text recorded as the killer (or nil).
+-- record: the history record of this death (for the killer's class and spec, and the location)
+-- recap (optional): from CollectDeathRecap, when the caller already collected it
+function dgks:ShowDeathRecap(killer, record, recap)
+	recap = recap or dgks:CollectDeathRecap()
+	local rows, source = recap.rows, recap.source
 	lastRecap = { rows = rows, killer = killer, source = source, record = record }
 	if dgks.db.profile.deathRecap then dgks:RenderDeathRecap(lastRecap) end
 end

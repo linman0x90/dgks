@@ -57,7 +57,7 @@ EMOTES = {}
 UNITS = { target = { guid = 'Player-2-ZED', name = 'Zed', realm = 'Other' } }
 GetPlayerInfoByGUID = function(g) if g == 'Player-2-ZED' then return "Mage", "MAGE", "Human", "Human", 2, "Zed", "Other" end return "Warrior", "WARRIOR", "Human", "Human", 2, "Me", "Realm" end
 dgks.TargetCheck = function() return true end
-for k, v in pairs({ killList = {}, killlog = {}, kstextS = {}, doemote = "BOW", dotxtemote = false, kstext = "$k killed $v", kstextM = { "x" }, dobroadcasts = false }) do dgks.db.profile[k] = v end
+for k, v in pairs({ kstextS = {}, doemote = "BOW", dotxtemote = false, kstext = "$k killed $v", kstextM = { "x" }, dobroadcasts = false }) do dgks.db.profile[k] = v end
 function dgks:ScrollText() end
 function dgks:dgks_SoundPack() end
 function dgks:GetKillshotSound() end
@@ -72,7 +72,7 @@ RUN_TIMERS()
 check("own kill emotes at the victim's unit", list(L.eval("EMOTES").values()) == ["BOW>target"], list(L.eval("EMOTES").values()))
 
 # Duel loss with no known killer
-L.execute("EMOTES = {}; UNITS = {}; dgks.db.profile.duelemoteloss = 'CRY'; dgks.db.profile.deathList = {}; dgks.db.profile.killlog = {}; dgks.db.profile.maxdeathstreak = 0; dgks.db.profile.doscreenshotonduelloss = false; dgks:PlayerLoss(nil)")
+L.execute("EMOTES = {}; UNITS = {}; dgks.db.profile.duelemoteloss = 'CRY'; dgks.db.profile.maxdeathstreak = 0; dgks.db.profile.doscreenshotonduelloss = false; dgks:PlayerLoss(nil)")
 check("duel loss to an unknown killer: no name lookup", list(L.eval("EMOTES").values()) == ["CRY>none"])
 
 # ---------- Battle.net friend whispers ----------
