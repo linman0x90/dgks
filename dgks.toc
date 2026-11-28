@@ -32,7 +32,11 @@ dgks.lua
 dgks_emotelist.lua
 dgks_players.lua
 dgks_history.lua
+dgks_bgkills.lua
 dgks_history_ui.lua
 dgks_window.lua
 dgks_minimap.lua
 dgks_deathrecap.lua
+#@debug@
+dgks_bgprobe.lua
+#@end-debug@

@@ -561,6 +561,23 @@ local function giveBroadcasts()
 				width = "full",
 				order = 90
 			},
+			ignoreOtherBGs = {
+				type = 'toggle',
+				name = 'Ignore guild killshots from other battlegrounds',
+				desc = "Don't show killshots and duel results from guild members who are in a battleground you are not in. "
+					.. "Their kills still go into guild history.",
+				get = function()
+					return dgks.db.profile.ignoreOtherBGs
+				end,
+				set = function(info, v)
+					dgks.db.profile.ignoreOtherBGs = v
+				end,
+				disabled = function()
+					return not dgks.db.profile.dobroadcasts or not dgks.db.profile.doguild
+				end,
+				width = "full",
+				order = 95
+			},
 			doraid = {
 				type = 'toggle',
 				name = 'Broadcasts to/from Party/Raid/Instance',
@@ -1159,6 +1176,7 @@ local defaults = {
 		docombattext = true,
 		dobroadcasts = true,
 		doguild = true,
+		ignoreOtherBGs = false,
 		dobg = true,
 		doraid = true,
 		dofriends = true,
@@ -1398,7 +1416,46 @@ function dgks:CombatLogEventHandler(info, timestamp, event, hideCaster, sourceGU
 	end 
 end
 
-function dgks:KillshotTX(txvictim,txtimestamp,txvictimGUID)
+-- The last hit we (or our pet) landed on each target, from Classic's combat log: the killing blow of
+-- a kill is the last hit on the victim just before it died. Retail and Forever close the combat log
+-- to addons, so there this stays empty and kills are recorded without one.
+local lastHits, lastHitCount = {}, 0 -- [victim GUID] = { t, ability, spellId, amount }
+local HIT_EVENTS = { SWING_DAMAGE = "swing", RANGE_DAMAGE = "spell", SPELL_DAMAGE = "spell",
+	SPELL_PERIODIC_DAMAGE = "spell", DAMAGE_SHIELD = "spell", DAMAGE_SPLIT = "spell" }
+
+local function trackDamageDealt(...)
+	local _, event, _, _, _, _, _, destGUID = ...
+	local kind = HIT_EVENTS[event]
+	if not kind or type(destGUID) ~= "string" then return end
+	local hit = { t = GetTime() }
+	if kind == "swing" then
+		hit.ability, hit.amount = "Melee", select(12, ...)
+	else
+		local _
+		hit.spellId, hit.ability, _, hit.amount = select(12, ...)
+	end
+	if lastHits[destGUID] == nil then lastHitCount = lastHitCount + 1 end
+	lastHits[destGUID] = hit
+	-- Forget old targets now and then
+	if lastHitCount > 200 then
+		local now = GetTime()
+		for guid, h in pairs(lastHits) do
+			if now - h.t > 30 then lastHits[guid] = nil; lastHitCount = lastHitCount - 1 end
+		end
+	end
+end
+
+-- Our last hit on this victim if it landed in the last 3 seconds: { ability, spellId, amount }
+local function lastHitOn(guid)
+	if type(guid) ~= "string" or isSecret(guid) then return nil end
+	local hit = lastHits[guid]
+	if not hit or GetTime() - hit.t > 3 then return nil end
+	return { ability = hit.ability, spellId = hit.spellId, amount = hit.amount }
+end
+
+-- flags (optional): passed to the history record, e.g. { guessed = 1, level = n, class = "MAGE" } for a
+-- battleground kill whose victim is our target at the time, not a name the game gave
+function dgks:KillshotTX(txvictim,txtimestamp,txvictimGUID,flags)
 	-- One death is one kill. The combat-log path can report the same death twice: PARTY_KILL and the
 	-- pet-credited UNIT_DIED branch, a few milliseconds apart. Drop a kill of the same victim within
 	-- 2 seconds of the last one (nobody dies twice that fast). This used to be caught by the duplicate
@@ -1437,6 +1494,17 @@ function dgks:KillshotTX(txvictim,txtimestamp,txvictimGUID)
 	-- (it does not when we are in no guild or group, or when addon messages are locked down).
 	self:ProcessKillshot("dgks", playerName, txvictim, txtimestamp, streak, multikill, true, txvictimGUID)
 	justRecorded = nil
+	-- NPC killshots (the "Trigger off NPC/PVE Killshots" option) go to history only with PvE logging on
+	if txvictimGUID == nil or isPlayerGUID(txvictimGUID) or self:LogsPvE() then
+		-- The killing blow, where we saw it land (Classic's combat log), added to any flags given
+		local hit = lastHitOn(txvictimGUID)
+		if hit then
+			local withHit = { hit = hit }
+			for k, v in pairs(flags or {}) do withHit[k] = v end
+			flags = withHit
+		end
+		self.History:Record("K", txvictim, txvictimGUID, streak, multikill, flags)
+	end
 
 	-- Then broadcast our Killshot to other dgks users. Our own echo is dropped in OnCommReceived.
 	self:SendCM("dgks",dgks:Serialize(playerName,txvictim,txtimestamp,streak,multikill))
@@ -1469,6 +1537,78 @@ function dgks:PlayerLoss(myKiller)
 	if dgks.db.profile.duelemoteloss ~= "none" then
 		dgks:EmoteAt(dgks.db.profile.duelemoteloss, nil, myKiller)
 	end
+end
+
+-- Battleground zone names, for telling from the guild roster that a member is in a battleground.
+-- The game's own list (localized) where it has one, plus the English names as a fallback.
+local BATTLEGROUND_ZONES = {
+	"Warsong Gulch", "Arathi Basin", "Alterac Valley", "Eye of the Storm", "Strand of the Ancients",
+	"Isle of Conquest", "Twin Peaks", "The Battle for Gilneas", "Battle for Gilneas", "Silvershard Mines",
+	"Temple of Kotmogu", "Deepwind Gorge", "Seething Shore", "Deephaul Ravine", "Korrak's Revenge",
+	"Darkspear Islands",
+}
+local battlegroundZones
+
+local function isBattlegroundZone(zone)
+	if isSecret(zone) or type(zone) ~= "string" or zone == "" then return false end
+	if not battlegroundZones then
+		local names, fromGame = {}, false
+		for _, n in ipairs(BATTLEGROUND_ZONES) do names[n] = true end
+		if type(GetNumBattlegroundTypes) == "function" and type(GetBattlegroundInfo) == "function" then
+			local ok, count = pcall(GetNumBattlegroundTypes)
+			if ok and not isSecret(count) and type(count) == "number" then
+				for i = 1, count do
+					local ok2, name = pcall(GetBattlegroundInfo, i)
+					if ok2 and not isSecret(name) and type(name) == "string" and name ~= "" then
+						names[name] = true
+						fromGame = true
+					end
+				end
+			end
+		end
+		-- Keep asking the game until it answers (its list may not be loaded at login)
+		if fromGame then battlegroundZones = names end
+		return names[zone] == true
+	end
+	return battlegroundZones[zone] == true
+end
+
+-- A name without its realm: "Name-Realm" -> "Name"; Forever's "First Surname" stays whole
+local function withoutRealm(name)
+	return name:match("^(.-)%-[^%-]*$") or name
+end
+
+-- The zone the guild roster shows for this member, or nil
+local function rosterZone(sender)
+	if type(GetNumGuildMembers) ~= "function" or type(GetGuildRosterInfo) ~= "function" then return nil end
+	local ok, count = pcall(GetNumGuildMembers)
+	if not ok or isSecret(count) or type(count) ~= "number" then return nil end
+	local want = withoutRealm(sender)
+	for i = 1, count do
+		local ok2, name, _, _, _, _, zone = pcall(GetGuildRosterInfo, i)
+		if ok2 and not isSecret(name) and type(name) == "string" and (name == sender or withoutRealm(name) == want) then
+			if isSecret(zone) then return nil end
+			return zone
+		end
+	end
+	return nil
+end
+
+-- Is this guild member in a battleground we are not in? In one with us they are in our group (the
+-- battleground's raid). The roster updates every so often, so a member who has just gone in or
+-- come out may be judged by where they were.
+function dgks:InOtherBattleground(sender)
+	if isSecret(sender) or type(sender) ~= "string" then return false end
+	if not isBattlegroundZone(rosterZone(sender)) then return false end
+	for _, name in ipairs({ sender, withoutRealm(sender) }) do
+		for _, fn in ipairs({ UnitInRaid, UnitInParty }) do
+			if type(fn) == "function" then
+				local ok, v = pcall(fn, name)
+				if ok and not isSecret(v) and v then return false end
+			end
+		end
+	end
+	return true
 end
 
 function dgks:OnCommReceived(cchan, message, distribution, sender)
@@ -1511,6 +1651,8 @@ function dgks:OnCommReceived(cchan, message, distribution, sender)
 		-- is recognised by who sent it, not by the killer name inside the message, so that another
 		-- player who shares our name is still heard.
 		if dgks:IsOwnSender(sender) then return end
+		-- A guild member's killshot from a battleground we are not in, when that is switched off
+		if distribution == "GUILD" and dgks.db.profile.ignoreOtherBGs and dgks:InOtherBattleground(sender) then return end
 		--Verify we have a valid event
 		local ok,rxkiller,rxvictim,rxtimestamp,rxstreak,rxmultikill = dgks:Deserialize(message)
 		if ok then
@@ -1704,7 +1846,7 @@ function dgks:PlayerDeath(myKiller, flags, guid, killerIsPlayer)
 	else
 		recapKiller = "killed by " .. myKiller
 	end
-	pcall(dgks.ShowDeathRecap, dgks, recapKiller, rec)
+	pcall(dgks.ShowDeathRecap, dgks, recapKiller, rec, recap)
 	if dgks.db.profile.doscreenshotondeath then Screenshot() end
 end
 
@@ -2168,6 +2310,10 @@ if classic then
 		local timestamp, event, hideCaster, sourceGUID, sourceName, sourceFlags, sourceFlags2, destGUID, destName, destFlags, destFlags2 = CombatLogGetCurrentEventInfo()
 		-- Keep the last seconds of damage we take for the death recap window (dgks_deathrecap.lua)
 		if destGUID == playerGUID then pcall(dgks.TrackDamageTaken, dgks, CombatLogGetCurrentEventInfo()) end
+		-- And the last hit we or our pet landed on each target, for the killing blow of our kills
+		if sourceGUID == playerGUID or petOwner(sourceGUID) == playerGUID then
+			pcall(trackDamageDealt, CombatLogGetCurrentEventInfo())
+		end
 		-- Remember the players we fight, so kill and death records can name their class (dgks_players.lua)
 		if destGUID == playerGUID then
 			dgks.Players:NoteCombatant(sourceGUID, sourceName)
@@ -2183,7 +2329,11 @@ if classic then
 	function events:PARTY_KILL(attackerGUID, targetGUID)
 		-- In restricted content the GUIDs arrive as secret values, which addon code cannot compare or inspect.
 		-- This guard must stay outside the debug block below, which is stripped from release builds.
-		if isSecret(attackerGUID) or isSecret(targetGUID) then return end
+		-- In a battleground our own killing blows can still be told apart (dgks_bgkills.lua).
+		if isSecret(attackerGUID) or isSecret(targetGUID) then
+			if dgks.BGKills then pcall(dgks.BGKills.OnHiddenKill, dgks.BGKills) end
+			return
+		end
 		-- A killing blow by a pet counts for its owner: ours as our kill, a group member's as their team kill
 		attackerGUID = petOwner(attackerGUID) or attackerGUID
 		--@debug@
@@ -2339,6 +2489,8 @@ local function updatePvPInstanceState()
 	if isSecret(instanceType) then instanceType = nil end
 	inArena = (instanceType == "arena")
 	inBG = (instanceType == "pvp")
+	-- Battleground kills are counted from the killing-blow statistic: start from its value here
+	if dgks.BGKills then pcall(dgks.BGKills.Reset, dgks.BGKills) end
 end
 
 function events:ZONE_CHANGED_NEW_AREA(info, event, ...)

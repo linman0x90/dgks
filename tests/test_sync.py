@@ -66,19 +66,29 @@ end
 
 
 class Client:
-    def __init__(self, name, network, clock, legacy=False):
+    def __init__(self, name, network, clock, legacy=False, patch=None):
         self.name = name
         L = self.L = lua51.LuaRuntime(unpack_returned_tuples=True)
         L.execute(STUBS, name, clock)
         L.execute(src("libs/LibStub/LibStub.lua"))
         L.execute(src("libs/AceSerializer-3.0/AceSerializer-3.0.lua"))
         L.execute(POST, name, network.send, legacy)
-        L.execute(src("dgks_history.lua"))
+        self.load(patch)
+        self._recv = L.eval("function(m, d, s) dgks:OnHistoryComm('dgksH', m, d, s) end")
+
+    def load(self, patch=None):
+        """Load dgks_history.lua, or load it again over the same saved data (an addon update).
+        patch: a function that edits the source first (a newer version)."""
+        code = src("dgks_history.lua")
+        if patch:
+            code = patch(code)
+        L = self.L
+        L.execute("TICKERS = {} FRAMES = {}")
+        L.execute(code)
         L.execute("dgks.History.InstallTooltip = function() end")
         L.execute("dgks.History:Initialize()")
         L.execute("dgks.History:Enable()")
         L.execute("for _, f in ipairs(FRAMES) do if f.onevent then f.onevent(f, 'GUILD_ROSTER_UPDATE') end end")
-        self._recv = L.eval("function(m, d, s) dgks:OnHistoryComm('dgksH', m, d, s) end")
 
     def run(self, code):
         self.L.execute(code)
@@ -99,10 +109,23 @@ class Client:
         t = self.L.eval("(function() local out = {} local s = dgks.db.global.history.guilds['Bloodbath-Realm'] if s then for k, st in pairs(s.streams) do out[k] = st.h end end return out end)()")
         return {k: v for k, v in t.items()}
 
+    def live_heads(self):
+        """Heads of the streams we still hold records in (the ones listed in our summaries)."""
+        t = self.L.eval("(function() local out = {} local s = dgks.db.global.history.guilds['Bloodbath-Realm'] if s then for k, st in pairs(s.streams) do if next(st.r) then out[k] = st.h end end end return out end)()")
+        return {k: v for k, v in t.items()}
+
+    def stream(self, key):
+        """(head, first unread sequence number) of one stream, or None."""
+        return self.L.eval(f"(function() local s = dgks.db.global.history.guilds['Bloodbath-Realm'] local st = s and s.streams['{key}'] if st then return {{st.h, st.u}} end end)()")
+
+    def my_stream(self):
+        return self.L.eval("dgks.db.char.historyStream.a .. '#' .. dgks.db.char.historyStream.e")
+
 
 class Network:
     def __init__(self):
         self.clients, self.inbox, self.count = {}, [], {}
+        self.drop = None  # drop(sender, msg, dist, target) -> True loses the message
 
     def send(self, sender, prefix, msg, dist, target):
         self.inbox.append((sender, msg, dist, target))
@@ -114,6 +137,8 @@ class Network:
         while self.inbox:
             batch, self.inbox = self.inbox, []
             for sender, msg, dist, target in batch:
+                if self.drop and self.drop(sender, msg, dist, target):
+                    continue
                 if dist == "GUILD":
                     for n, c in list(self.clients.items()):
                         if n != sender:
@@ -183,7 +208,9 @@ clock.now += 31
 settle((A, B, C))
 print("  counts", A.guild_count(), B.guild_count(), C.guild_count(), A.heads(), C.heads())
 check("late joiner Cara synced the 1 non-expired record", C.guild_count() == 1)
-check("Cara's heads match Alice's (pruned records skipped)", C.heads() == A.heads())
+check("Cara's heads match Alice's (pruned records skipped)", C.live_heads() == A.live_heads())
+check("Bob's stream, all expired, is kept by Alice but not listed to Cara",
+      "Bob-Realm#1790000000" in A.heads() and "Bob-Realm#1790000000" not in C.heads(), (A.heads(), C.heads()))
 
 del net.clients["Bob"]
 for i in range(40):
@@ -193,7 +220,7 @@ net.clients["Bob"] = B
 clock.now += 16 * 60
 settle((A, B, C))
 check("Bob caught up after being offline (41)", B.guild_count() == 41)
-check("all heads equal", A.heads() == B.heads() == C.heads())
+check("all heads equal", A.live_heads() == B.live_heads() == C.live_heads())
 
 run_for(20 * 60, (A, B, C))
 net.count = {}
@@ -225,7 +252,7 @@ for rnd in range(3):
     clock.now += 16 * 60
     settle((A, B, C))
 check("backlog over 300 arrives across rounds (391)", C.guild_count() == 391)
-check("all heads equal after backlog", A.heads() == B.heads() == C.heads())
+check("all heads equal after backlog", A.live_heads() == B.live_heads() == C.live_heads())
 
 # Saved-variable wipe: Alice restarts with nothing, new stream, no reuse of old numbers
 A2 = Client("Alice", net, clock)
@@ -292,6 +319,97 @@ check("guild messages still sent", any(x[0] == 'Cara' and x[1] == 'GUILD' for x 
 check("whispers still sent", any(x[0] == 'Cara' and x[2] == 'Fred' for x in net.sent))
 clock.now += 120
 check("friend whisper hidden only for a minute", nf("Fred") is False)
+
+
+# A batch lost on the way: the end marker must not move the head past records that never arrived
+print("-- lost batch")
+net = Network()
+A = net.clients["Alice"] = Client("Alice", net, clock)
+B = Client("Bob", net, clock)  # offline while Alice records
+for i in range(20):
+    A.run(f"dgks.History:Record('K', 'Lost{i}', nil, 1, 0)")
+A.tick(); net.deliver()
+net.clients["Bob"] = B
+lost = []
+def drop_first_batch(sender, msg, dist, target):
+    if sender == "Alice" and dist == "WHISPER" and msg.startswith("^1^SB^") and not lost:
+        lost.append(msg)
+        return True
+    return False
+net.drop = drop_first_batch
+clock.now += 31
+settle((A, B))
+clock.now += 16 * 60
+settle((A, B))
+check("a batch was lost on the way", len(lost) == 1)
+check("Bob still gets every record (20)", B.guild_count() == 20, B.guild_count())
+check("Bob's head matches Alice's", B.live_heads() == A.live_heads(), (B.live_heads(), A.live_heads()))
+
+# An end marker past the head the peer's summary showed is capped there. This one also comes without a
+# record count, as from a version before the count was added, and is still taken.
+print("-- end marker capped")
+net = Network()
+A = net.clients["Alice"] = Client("Alice", net, clock)
+for i in range(5):
+    A.run(f"dgks.History:Record('K', 'Cap{i}', nil, 1, 0)")
+A.tick(); net.deliver()
+C = net.clients["Cara"] = Client("Cara", net, clock)
+net.drop = lambda sender, msg, dist, target: sender == "Alice" and dist == "WHISPER"
+clock.now += 31
+settle((A, C))
+stream = A.my_stream()
+forged = A.L.eval(f"dgks:Serialize('E', 'Bloodbath-Realm', '{stream}', 1000000)")
+C.receive(forged, "WHISPER", "Alice")
+check("head capped at the 5 Alice's summary showed", C.stream(stream) and C.stream(stream)[1] == 5, C.stream(stream))
+
+# A newer version adds a record kind. An older one skips those records, notes where, and asks for them
+# again once it is updated.
+print("-- records from a newer version")
+def newer(code):
+    assert "X = true }" in code and "local SCHEMA = 1" in code
+    return code.replace("X = true }", "X = true, Y = true }").replace("local SCHEMA = 1", "local SCHEMA = 2")
+net = Network()
+A = net.clients["Alice"] = Client("Alice", net, clock, patch=newer)
+B = Client("Bob", net, clock)
+A.run("dgks.History:Record('K', 'One', nil, 1, 0)")
+A.run("dgks.History:Record('Y', 'Two', nil, 1, 0)")
+A.run("dgks.History:Record('K', 'Three', nil, 1, 0)")
+A.tick(); net.deliver()
+net.clients["Bob"] = B
+clock.now += 31
+settle((A, B))
+stream = A.my_stream()
+check("older Bob keeps the 2 records he can read", B.guild_count() == 2, B.guild_count())
+check("older Bob's head moves past the unreadable record, which is noted", B.stream(stream) and tuple(B.stream(stream).values()) == (3, 2), B.stream(stream))
+run_for(20 * 60, (A, B))
+net.count = {}
+run_for(20 * 60, (A, B))
+check("no requests for it while Bob cannot read it", net.count.get("WHISPER", 0) == 0, net.count)
+B.load(newer)  # Bob updates
+check("after the update Bob's head goes back before it", B.stream(stream) and tuple(B.stream(stream).values()) == (1,), B.stream(stream))
+clock.now += 31
+settle((A, B))
+clock.now += 16 * 60
+settle((A, B))
+check("updated Bob gets the record (3)", B.guild_count() == 3, B.guild_count())
+check("updated Bob's head is 3, nothing noted", B.stream(stream) and tuple(B.stream(stream).values()) == (3,), B.stream(stream))
+
+# Empty streams: kept with their head so they are not asked for again, left out of summaries, and
+# forgotten once older than any retention setting
+print("-- empty streams")
+B.run("dgks.db.profile.historyRetentionDays = 30")
+clock.now += 40 * 86400
+A.run("dgks.History:Prune()"); B.run("dgks.History:Prune()")
+check("Alice (90 days) keeps the records, Bob (30 days) does not", A.guild_count() == 3 and B.guild_count() == 0)
+check("Bob keeps the empty stream's head", B.heads().get(stream) == 3 and B.live_heads() == {}, B.heads())
+run_for(20 * 60, (A, B))
+net.count = {}
+run_for(20 * 60, (A, B))
+check("no requests for a stream Bob holds nothing in", net.count.get("WHISPER", 0) == 0, net.count)
+check("summaries still suppressed (same heads)", 1 <= net.count.get("GUILD", 0) <= 2, net.count)
+clock.now += 800 * 86400
+A.run("dgks.History:Prune()"); B.run("dgks.History:Prune()")
+check("a stream with nothing newer than 730 days is forgotten", A.heads() == {} and B.heads() == {}, (A.heads(), B.heads()))
 
 print("FAILS:", fails)
 sys.exit(1 if fails else 0)

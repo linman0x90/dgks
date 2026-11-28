@@ -18,12 +18,22 @@
 --                 an identical summary.
 --   Q  (WHISPER)  request to a peer whose summary shows newer records: "send stream X after #n"
 --   B  (WHISPER)  a batch of records for one stream, in answer to Q
---   E  (WHISPER)  end of an answer: "you now have everything in stream X up to #n". Records older
---                 than the sender's retention are not sent, so this is what lets the receiver's
---                 head move past pruned records.
+--   E  (WHISPER)  end of an answer: "you now have everything in stream X up to #n", and how many
+--                 records the answer held. Records older than the sender's retention are not sent,
+--                 so this is what lets the receiver's head move past pruned records. If fewer
+--                 records arrived than were sent, the receiver keeps its head and asks again later.
 --
 -- A stream's head means "we hold every non-expired record up to this number". Heads only move up
--- by contiguous records, by the author's own writes, or by an E marker from the peer we asked.
+-- by contiguous records, by the author's own writes, or by an E marker from the peer we asked
+-- (never past the head that peer's summary showed).
+--
+-- A record this version cannot read (a kind or field added later) is skipped like an expired one,
+-- but the stream notes where it was. When SCHEMA goes up, the head moves back there and the stream
+-- is asked for again, so an update brings those records in instead of losing them for good.
+--
+-- A stream with no records left (all expired) keeps its head, so peers that still list it are not
+-- asked for it again, but it is left out of our summaries. Once its newest record is older than
+-- any retention setting allows, nobody can hold anything in it and it is forgotten.
 
 local dgks = dgks
 local H = {}
@@ -37,6 +47,11 @@ local REQUEST_TIMEOUT = 120           -- seconds before a request that got no an
 local MAX_STREAMS_PER_REQUEST = 40
 local MAX_RECORDS_PER_ANSWER = 300    -- per stream per request; the rest follows next round
 local RECORDS_PER_BATCH = 8
+-- Bump when FIELDS or KINDS change, so records an older version skipped are asked for again
+local SCHEMA = 1
+-- An empty stream whose newest record is older than this is forgotten. Longer than the longest
+-- retention setting (365 days), so no member can still hold a record in it.
+local FORGET_AFTER = 730 * 86400
 -- Kill, Death, duel Win, duel Loss, and X: a killing blow by a party or raid member that we saw
 local KINDS = { K = true, D = true, W = true, L = true, X = true }
 
@@ -216,7 +231,7 @@ local FIELDS = {
 	mk = { "number", { 0, 100 } }, -- multikill level
 	lg = { "number", { 1, 1 } }, -- imported from the old kill/death lists (personal only)
 	u = { "number", { 1, 1 } },  -- the killer is not known; o says why ("Hidden by the game", ...)
-	g = { "number", { 1, 1 } },  -- the killer is a guess: an enemy player targeting us when we died
+	g = { "number", { 1, 1 } },  -- the opponent is a guess: an enemy player targeting us when we died, or our target on a battleground kill
 	gn = { "number", { 1, 40 } }, -- how many enemy players were targeting us then
 	os = { "number", { 1, 100000 } }, -- opponent spec ID (when an inspect found it)
 	cs = { "number", { 1, 100000 } }, -- author spec ID
@@ -224,6 +239,9 @@ local FIELDS = {
 	kc = { "string", 20 }, -- team kill: killer class file
 	ks = { "number", { 1, 100000 } }, -- team kill: killer spec ID
 	kl = { "number", { -1, 1000 } }, -- team kill: killer level
+	ab = { "string", 64 }, -- the killing blow's ability: a spell name, "Melee", or "Falling" and the like
+	ai = { "number", { 1, 1e7 } }, -- the killing blow's spell ID, when it was a spell
+	dm = { "number", { 0, 1e9 } }, -- the killing blow's damage
 }
 local REQUIRED = { a = true, e = true, s = true, t = true, k = true, o = true }
 
@@ -280,10 +298,21 @@ local function advanceHead(st)
 	while st.r[st.h + 1] do st.h = st.h + 1 end
 end
 
+-- Note the time of the newest record seen in a stream (st.t), kept after its records expire
+local function noteTime(st, t)
+	if type(t) == "number" and t > (st.t or 0) then st.t = t end
+end
+
+-- Is this stream listed in our summaries? Only while we hold records in it.
+local function advertised(st)
+	return st.h > 0 and next(st.r) ~= nil
+end
+
 -- Store a record in the guild store. Returns true if it was new.
 local function storeRecord(store, rec)
 	if rec.t < cutoff() then return false end
 	local st = getStream(store, streamKey(rec.a, rec.e))
+	noteTime(st, rec.t)
 	if st.r[rec.s] then return false end
 	st.r[rec.s] = rec
 	advanceHead(st)
@@ -291,11 +320,33 @@ local function storeRecord(store, rec)
 end
 
 function H:Prune()
-	local limit = cutoff()
+	local limit, t, removed = cutoff(), now(), false
 	for _, store in pairs(dgks.db.global.history.guilds) do
-		for _, st in pairs(store.streams) do
+		for key, st in pairs(store.streams) do
 			for seq, rec in pairs(st.r) do
-				if rec.t < limit then st.r[seq] = nil end
+				if rec.t < limit then
+					st.r[seq] = nil
+					removed = true
+				end
+			end
+			if next(st.r) == nil then
+				-- Emptied by a version that did not note times: start counting from now
+				if not st.t then st.t = t end
+				if st.t < t - FORGET_AFTER then store.streams[key] = nil end
+			end
+		end
+	end
+	if removed then H:NotifyChanged() end
+end
+
+-- A record this version could not read was skipped (see onEnd). After an update that may read it,
+-- move the head back to it, so the next summary round asks for the stream again.
+local function retryUnread()
+	for _, store in pairs(dgks.db.global.history.guilds) do
+		for _, st in pairs(store.streams or {}) do
+			if st.u and (st.uv or 0) < SCHEMA then
+				if st.h >= st.u then st.h = st.u - 1 end
+				st.u, st.uv = nil, nil
 			end
 		end
 	end
@@ -420,7 +471,10 @@ end
 -- Record something that happened to us. kind: K, D, W or L. opponent: the other player's name.
 -- guid: the opponent's GUID when known. streak/multikill: the counters after this event.
 -- flags (optional): { unknown = true } when opponent is a reason, not a name;
--- { guessed = n } when opponent is a guess made from n enemy players targeting us.
+-- { hit = { ability, spellId, amount } } for the killing blow, where the game reported it.
+-- { guessed = n } when opponent is a guess: on a death, made from n enemy players targeting us; on a
+-- kill (K), our target when a battleground hid the victim. A guess may add level and class, read
+-- from the unit, for when the player cache does not know the opponent.
 -- Called from the kill and death handlers, so a failure here must never reach them.
 function H:Record(kind, opponent, guid, streak, multikill, flags)
 	local ok, result = pcall(H.RecordUnsafe, H, kind, opponent, guid, streak, multikill, flags)
@@ -490,9 +544,18 @@ function H:RecordUnsafe(kind, opponent, guid, streak, multikill, flags)
 		if usable(killer.spec, "number") then rec.ks = killer.spec end
 		if usable(killer.level, "number") and killer.level ~= 0 then rec.kl = killer.level end
 	end
+	-- The killing blow: our hit on a kill, the one that killed us on a death
+	local hit = flags and flags.hit
+	if type(hit) == "table" and (kind == "K" or kind == "D") then
+		if usable(hit.ability, "string") and hit.ability ~= "" then rec.ab = hit.ability:sub(1, 64) end
+		if usable(hit.spellId, "number") and hit.spellId >= 1 then rec.ai = math.floor(hit.spellId) end
+		if usable(hit.amount, "number") and hit.amount >= 0 then rec.dm = math.floor(hit.amount) end
+	end
 	if flags and type(flags.guessed) == "number" then
 		rec.g = 1
 		rec.gn = math.max(1, math.min(40, math.floor(flags.guessed)))
+		if not rec.ol and usable(flags.level, "number") and flags.level ~= 0 then rec.ol = flags.level end
+		if not rec.oc and usable(flags.class, "string") and flags.class ~= "" then rec.oc = flags.class end
 	end
 
 	-- Shared records get a place in our stream
@@ -515,6 +578,7 @@ function H:RecordUnsafe(kind, opponent, guid, streak, multikill, flags)
 	if store then
 		local st = getStream(store, streamKey(rec.a, rec.e))
 		st.r[rec.s] = rec
+		noteTime(st, rec.t)
 		st.h = math.max(st.h, rec.s) -- we are the author: everything up to here is complete
 		send("GUILD", nil, "NORMAL", "R", guildKey, rec)
 	end
@@ -524,21 +588,25 @@ end
 
 -- Sync ------------------------------------------------------------------------------------------
 
+-- The heads we list in a summary (streams we hold records in), and a digest of every head. The
+-- digest also covers empty streams, so it matches a member's whose retention keeps more of them,
+-- and the summaries of members on older versions, which still list every stream.
 local function headsAndDigest()
 	local store = guildStore(false)
-	local heads, keys = {}, {}
+	local heads, keys, all = {}, {}, {}
 	if store then
 		for stream, st in pairs(store.streams) do
 			if st.h > 0 then
-				heads[stream] = st.h
+				all[stream] = st.h
 				keys[#keys + 1] = stream
+				if advertised(st) then heads[stream] = st.h end
 			end
 		end
 	end
 	table.sort(keys)
 	local h = 5381
 	for _, k in ipairs(keys) do
-		local s = k .. "=" .. heads[k] .. ";"
+		local s = k .. "=" .. all[k] .. ";"
 		for i = 1, #s do h = (h * 33 + s:byte(i)) % 4294967296 end
 	end
 	return heads, h
@@ -585,7 +653,7 @@ local function onSummary(sender, proto, digest, heads)
 	-- soon so they can ask for them. Whoever goes first suppresses the identical summaries of the rest.
 	for stream, st in pairs(store.streams) do
 		local theirs = heads[stream]
-		if st.h > 0 and (type(theirs) ~= "number" or theirs < st.h) then
+		if advertised(st) and (type(theirs) ~= "number" or theirs < st.h) then
 			nextSummaryAt = math.min(nextSummaryAt, t + math.random(3, 15))
 			break
 		end
@@ -619,9 +687,13 @@ local function onRequest(sender, wants)
 				end
 			end
 			if #batch > 0 then send("WHISPER", sender, "BULK", "B", guildKey, stream, batch) end
-			send("WHISPER", sender, "BULK", "E", guildKey, stream, upTo)
+			send("WHISPER", sender, "BULK", "E", guildKey, stream, upTo, sent)
 		end
 	end
+end
+
+local function isSeq(v)
+	return type(v) == "number" and v >= 1 and v <= 1e9 and v == math.floor(v)
 end
 
 local function onBatch(sender, stream, batch)
@@ -631,20 +703,39 @@ local function onBatch(sender, stream, batch)
 	local store = guildStore(true)
 	local added = false
 	for _, raw in ipairs(batch) do
+		p.got = (p.got or 0) + 1
 		local rec = cleanRecord(raw)
-		if rec and streamKey(rec.a, rec.e) == stream then
-			if storeRecord(store, rec) then added = true end
+		if rec then
+			if streamKey(rec.a, rec.e) == stream then
+				noteTime(getStream(store, stream), rec.t) -- also when it has expired for us
+				if storeRecord(store, rec) then added = true end
+			end
+		elseif type(raw) == "table" and isSeq(raw.s) then
+			-- A record we cannot read: from a newer version, most likely. Note the first one.
+			if not p.unread or raw.s < p.unread then p.unread = raw.s end
 		end
 	end
 	if added then H:NotifyChanged() end
 end
 
-local function onEnd(sender, stream, upTo)
+local function onEnd(sender, stream, upTo, sent)
 	local p = type(stream) == "string" and pending[stream]
 	if not p or p.peer ~= sender then return end
 	pending[stream] = nil
 	if type(upTo) ~= "number" or upTo ~= math.floor(upTo) or upTo < 1 then return end
+	-- Never past the head the peer's summary showed
+	if p.target and upTo > p.target then upTo = p.target end
 	local st = getStream(guildStore(true), stream)
+	-- The peer says how many records it sent (versions before this one don't). If a different number
+	-- arrived, some were lost on the way: keep only the records we hold, and ask again next round.
+	if sent ~= nil and sent ~= (p.got or 0) then
+		advanceHead(st)
+		return
+	end
+	-- Records we could not read are skipped like expired ones, but the first is noted (see retryUnread)
+	if p.unread and p.unread <= upTo and p.unread > st.h and not (st.u and st.u <= p.unread) then
+		st.u, st.uv = p.unread, SCHEMA
+	end
 	if upTo > st.h then
 		st.h = upTo
 		advanceHead(st)
@@ -697,7 +788,7 @@ function dgks:OnHistoryComm(prefix, message, distribution, sender)
 	elseif distribution == "WHISPER" and not legacy and isMember(sender) then
 		if op == "Q" then onRequest(sender, a)
 		elseif op == "B" then onBatch(sender, a, b)
-		elseif op == "E" then onEnd(sender, a, b) end
+		elseif op == "E" then onEnd(sender, a, b, c) end
 	end
 end
 
@@ -736,6 +827,7 @@ local function mergeGuildStore(oldKey)
 					-- Past the retention period it would be pruned anyway
 					if clean.t >= limit then
 						if st.r[seq] == nil then st.r[seq] = clean end
+						noteTime(st, clean.t)
 						if seq > top then top = seq end
 					end
 					ost.r[seq] = nil
@@ -1063,6 +1155,7 @@ function H:Enable()
 	H:UpdateIdentity()
 	importLegacy()
 	H:RepairEmptyRealms()
+	retryUnread()
 	H:Prune()
 	H:InstallTooltip() -- dgks_history_ui.lua
 
