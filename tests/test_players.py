@@ -219,6 +219,19 @@ L.execute("UNKNOWNOBJECT = UNKNOWNOBJECT or 'Unknown'")
 status = L.eval("function() return dgks.History.StatusText() end")
 check("status line names the guild", "Guild Bloodbath-" in status() and "-Unknown" not in status(), status())
 
+# A battleground kill whose victim is our target at the time: marked likely, with the level from the flags
+L.execute("""dgks.db.char.history.records = {}
+REC = dgks.History:Record('K', 'Sdot-Other', nil, 1, 0, { guessed = 1, level = 59, class = 'ROGUE' })
+ROWS = dgks.History:ViewRows('mine')""")
+rec = L.eval("REC")
+check("likely battleground kill: g set, level and class from the flags", rec["g"] == 1 and rec["ol"] == 59 and rec["oc"] == "ROGUE",
+      (rec["g"], rec["ol"], rec["oc"]))
+row = [strip(c) for c in list(L.eval("ROWS").values())[0]["cells"].values()]
+check("likely battleground kill: row shows the level and (likely)", row[2] == "59 Sdot-Other (likely)", row)
+lines = tooltip_of()
+check("likely battleground kill: tooltip says likely victim, not likely killer",
+      any(l.startswith("Likely victim: your target") for l in lines) and not any("Likely killer" in l for l in lines), lines)
+
 # Killer no longer visible: the level comes from the player cache
 L.execute("""UNITS.mouseover = { player = true, guid = 'Player-1-CARA', name = 'Cara', realm = 'Realm', class = 'MAGE', race = 'Gnome', level = 75 }
 FIRE('UPDATE_MOUSEOVER_UNIT')

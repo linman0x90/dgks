@@ -23,6 +23,7 @@ They work from any folder. Each test prints PASS or FAIL for each check and exit
 | `test_sync.py` | Guild history sync between simulated clients: live records, catch-up after being offline, late joiners, backlogs over several rounds, forged or malformed messages, pruning, no whispers to members who logged off, and hiding "No player named …" |
 | `test_sync_fields.py` | Every shared record field reaches other members unchanged, live and through catch-up sync, on retail and Forever names |
 | `test_battleground.py` | Team kills by party and raid members: who records them, and which reach guild history |
+| `test_bgkills.py` | Our kills in battlegrounds, where the game hides the killer and the victim: told apart by the killing-blow and honorable-kill statistics, the victim taken from our target and marked as likely; NPC kills, groupmates' kills, dungeons and arenas left alone |
 | `test_death.py` | Deaths on retail: the killer from Blizzard's Death Recap, secret or hidden killers, and the likely-killer guess |
 | `test_pvp_logging.py` | Only PvP kills and deaths are logged by default; the *Also log PvE kills and deaths* option; Classic deaths by who landed the last hit |
 | `test_unknown_killer.py` | Unknown and likely killers: how they're stored, counted and shown |
