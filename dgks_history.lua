@@ -224,6 +224,9 @@ local FIELDS = {
 	kc = { "string", 20 }, -- team kill: killer class file
 	ks = { "number", { 1, 100000 } }, -- team kill: killer spec ID
 	kl = { "number", { -1, 1000 } }, -- team kill: killer level
+	ab = { "string", 64 }, -- the killing blow's ability: a spell name, "Melee", or "Falling" and the like
+	ai = { "number", { 1, 1e7 } }, -- the killing blow's spell ID, when it was a spell
+	dm = { "number", { 0, 1e9 } }, -- the killing blow's damage
 }
 local REQUIRED = { a = true, e = true, s = true, t = true, k = true, o = true }
 
@@ -420,6 +423,7 @@ end
 -- Record something that happened to us. kind: K, D, W or L. opponent: the other player's name.
 -- guid: the opponent's GUID when known. streak/multikill: the counters after this event.
 -- flags (optional): { unknown = true } when opponent is a reason, not a name;
+-- { hit = { ability, spellId, amount } } for the killing blow, where the game reported it.
 -- { guessed = n } when opponent is a guess: on a death, made from n enemy players targeting us; on a
 -- kill (K), our target when a battleground hid the victim. A guess may add level and class, read
 -- from the unit, for when the player cache does not know the opponent.
@@ -491,6 +495,13 @@ function H:RecordUnsafe(kind, opponent, guid, streak, multikill, flags)
 		if usable(killer.class, "string") then rec.kc = killer.class end
 		if usable(killer.spec, "number") then rec.ks = killer.spec end
 		if usable(killer.level, "number") and killer.level ~= 0 then rec.kl = killer.level end
+	end
+	-- The killing blow: our hit on a kill, the one that killed us on a death
+	local hit = flags and flags.hit
+	if type(hit) == "table" and (kind == "K" or kind == "D") then
+		if usable(hit.ability, "string") and hit.ability ~= "" then rec.ab = hit.ability:sub(1, 64) end
+		if usable(hit.spellId, "number") and hit.spellId >= 1 then rec.ai = math.floor(hit.spellId) end
+		if usable(hit.amount, "number") and hit.amount >= 0 then rec.dm = math.floor(hit.amount) end
 	end
 	if flags and type(flags.guessed) == "number" then
 		rec.g = 1
