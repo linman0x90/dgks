@@ -20,7 +20,7 @@ They work from any folder. Each test prints PASS or FAIL for each check and exit
 
 | File | What it checks |
 | --- | --- |
-| `test_sync.py` | Guild history sync between simulated clients: live records, catch-up after being offline, late joiners, backlogs over several rounds, forged or malformed messages, pruning, no whispers to members who logged off, and hiding "No player named …" |
+| `test_sync.py` | Guild history sync between simulated clients: live records, catch-up after being offline, late joiners, backlogs over several rounds, forged or malformed messages, pruning, no whispers to members who logged off, and hiding "No player named …". Also a batch lost on the way, an end marker past the advertised head, records from a newer version asked for again after an update, and empty streams left out of summaries and forgotten |
 | `test_sync_fields.py` | Every shared record field reaches other members unchanged, live and through catch-up sync, on retail and Forever names |
 | `test_battleground.py` | Team kills by party and raid members: who records them, and which reach guild history |
 | `test_bgkills.py` | Our kills in battlegrounds, where the game hides the killer and the victim: told apart by the killing-blow and honorable-kill statistics, the victim taken from our target and marked as likely; NPC kills, groupmates' kills, dungeons and arenas left alone |
