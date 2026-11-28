@@ -602,7 +602,9 @@ local function giveBroadcasts()
 			dobg = {
 				type = 'toggle',
 				name = 'Broadcast to/from Battleground',
-				desc = 'Broadcast killshot to battleground.',
+				desc = 'Broadcast killshots to the battleground or arena team. On retail and WoW Forever the game blocks addon '
+					.. 'messages inside battlegrounds, so killshots cannot reach teammates or guild members there; your own '
+					.. 'kills are still recorded and reach guild history once you are out.',
 				get = function()
 					return dgks.db.profile.dobg
 				end,
@@ -2069,9 +2071,18 @@ end
 
 -- Version check: ask everyone we broadcast to for their version. Replies (dgksVR) are listed in
 -- Settings > Broadcasts, under the button, instead of in chat.
+-- Does the game block addon messages here and now? It does for the whole of a battleground (seen on
+-- Forever: every send failed, from the gates opening to the end, in combat or not, and nothing
+-- arrived), so killshots and version checks cannot go out or come in there.
+function dgks:MessagesBlocked()
+	if not (C_ChatInfo and type(C_ChatInfo.InChatMessagingLockdown) == "function") then return false end
+	local ok, locked = pcall(C_ChatInfo.InChatMessagingLockdown)
+	return ok and not isSecret(locked) and locked == true
+end
+
 function dgks:VersionCheck()
-	dgks.versionCheck = { at = time(), replies = {} }
-	self:SendCM("dgksV",version)
+	dgks.versionCheck = { at = time(), replies = {}, blocked = self:MessagesBlocked() or nil }
+	if not dgks.versionCheck.blocked then self:SendCM("dgksV",version) end
 	self:RefreshSettings()
 end
 
@@ -2104,6 +2115,10 @@ function dgks:VersionCheckText()
 	local check = dgks.versionCheck
 	if not check then return "" end
 	local lines = { "|cffffd100Your version:|r " .. tostring(version) }
+	if check.blocked then
+		lines[#lines + 1] = "|cffff9933The game blocks addon messages here (in battlegrounds), so no one can be asked. Try again outside.|r"
+		return table.concat(lines, "\n")
+	end
 	local names = {}
 	for name in pairs(check.replies) do names[#names + 1] = name end
 	table.sort(names, function(a, b) return a:lower() < b:lower() end)
@@ -2166,6 +2181,9 @@ function dgks:SendCM(cchan,msg)
 	-- Example usage: self:SendCM("dgksDUEL",dgks:Serialize(playerName,txvictim,txtimestamp,streak,multikill)
 
 	-- Our own kills are already handled locally (ProcessKillshot), so no whisper to ourselves is needed.
+
+	-- Where the game blocks addon messages (battlegrounds) every send fails silently: don't try
+	if self:MessagesBlocked() then return end
 
 	if dgks.db.profile.dobroadcasts then
 

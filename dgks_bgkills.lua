@@ -96,9 +96,8 @@ local function candidate()
 	return nil
 end
 
--- Is this candidate still alive and on the same unit? A victim drops off our target as they die
--- (the probe saw that within a quarter of a second), so a candidate still there and alive was not
--- killed: the kill was someone else's, or an NPC's.
+-- Is this candidate still alive and on the same unit? Shown in the probe's trace: a victim drops off
+-- our target as they die (the probe saw that within a quarter of a second).
 local function stillAlive(c)
 	local ok, name, realm = pcall(UnitName, c.unit)
 	if not ok or isSecret(name) or isSecret(realm) then return false end
@@ -169,10 +168,11 @@ local function settle(kill)
 	trace("kill #%d: ours; honor %s; dead plates: %s; target: %s", kill.n, honor and "yes" or "no",
 		#names > 0 and table.concat(names, ", ") or "none",
 		target and (target.name .. (targetAlive and " (still alive)" or " (gone or dead)")) or "none")
-	-- The victim: our target if their plate vanished dead (confirmed); else the first enemy whose
-	-- plate vanished dead; else, with an honorable kill, our target if they are no longer there alive.
-	-- An honorable kill alone is not enough: a groupmate's player kill nearby gives us honor too, at
-	-- the same moment as our own kill of an NPC.
+	-- The victim: our target if their plate vanished dead (confirmed); else the first enemy whose plate
+	-- vanished dead (likely). Without a dead plate nothing is recorded: an honorable kill alone is not
+	-- enough, since a groupmate's player kill nearby gives us honor at the same moment as our own kill
+	-- of an NPC. In four probed games every real player kill of ours had a dead plate; the one kill
+	-- recorded without one (honor, target gone) was not on the scoreboard.
 	local victim, confirmed
 	if target then
 		for _, p in ipairs(plates) do
@@ -180,10 +180,9 @@ local function settle(kill)
 		end
 	end
 	if not victim then victim = plates[1] end
-	if not victim and honor and target and not targetAlive then victim = target end
 	if not victim then
-		trace("kill #%d: not recorded (%s)", kill.n, honor and (target and "target still alive" or "nobody to name")
-			or "no honor and no dead plate: an NPC")
+		trace("kill #%d: not recorded (no dead plate: %s)", kill.n, honor and "honor, but no player seen dying"
+			or "no honor either: an NPC")
 		return
 	end
 	victim.claimed = true
